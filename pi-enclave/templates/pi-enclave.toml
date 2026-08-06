@@ -1,0 +1,25 @@
+# pi-enclave global configuration
+# See: https://github.com/mgabor3141/yapp/tree/main/packages/enclave
+
+# Enclave activation is session-only. Run /enclave on after starting pi.
+
+# Optional custom Gondolin image tag or asset path.
+# Build a larger image separately if you need more disk space.
+# image = "pi-enclave-large:latest"
+
+# Base packages (drop-in files in pi-enclave.d/ add more):
+packages = ["git", "curl", "jq"]
+
+# Environment variables available in the VM and setup scripts.
+# Values can be static strings, host commands, or host env vars.
+[env]
+USER_NAME = { command = "git config --global user.name" }
+USER_EMAIL = { command = "git config --global user.email" }
+
+# Service policies live in pi-enclave.d/ as drop-in files.
+# See pi-enclave.d/ for examples.
+
+# Additional secrets:
+# [secrets.OPENAI_API_KEY]
+# env = "OPENAI_API_KEY"
+# hosts = ["api.openai.com"]

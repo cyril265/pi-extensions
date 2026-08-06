@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+
+import os
+import shutil
+import sys
+from collections import Counter
+from pathlib import Path
+
+
+TARGET_NAMES = {"node_modules", "bin", "obj"}
+PROJECT_FILE_SUFFIXES = (".csproj", ".fsproj", ".vbproj")
+
+if len(sys.argv) != 2:
+    raise SystemExit("usage: clean-generated-artifacts <worktree-root>")
+
+ROOT = Path(sys.argv[1]).expanduser()
+
+
+def is_dotnet_build_output(bin_dir: Path) -> bool:
+    parent = bin_dir.parent
+    # A .NET "bin" sits next to a project file, or — for stale output of a
+    # deleted project — next to its "obj" sibling.
+    return (parent / "obj").is_dir() or any(
+        entry.suffix in PROJECT_FILE_SUFFIXES for entry in parent.iterdir()
+    )
+
+
+def find_targets() -> list[Path]:
+    targets: list[Path] = []
+
+    for current, directories, _ in os.walk(ROOT, topdown=True, followlinks=False):
+        directories.sort()
+        parent = Path(current)
+        matched: set[str] = set()
+        for name in directories:
+            if name not in TARGET_NAMES:
+                continue
+            if name == "bin" and not is_dotnet_build_output(parent / name):
+                continue
+            matched.add(name)
+            targets.append(parent / name)
+
+        # Do not inspect Git metadata or directories that will be removed.
+        directories[:] = [
+            name
+            for name in directories
+            if name != ".git" and name not in matched
+        ]
+
+    return targets
+
+
+def main() -> None:
+    if not ROOT.is_dir():
+        raise SystemExit(f"Worktree directory does not exist: {ROOT}")
+
+    targets = find_targets()
+    if not targets:
+        print(f"No generated artifact directories found under {ROOT}")
+        return
+
+    counts = Counter(target.name for target in targets)
+    print(f"Directories to delete under {ROOT}:")
+    for name in sorted(TARGET_NAMES):
+        print(f"  {name}: {counts[name]}")
+    print(f"  total: {len(targets)}\n")
+
+    for target in targets:
+        print(target)
+
+    confirmation = input("\nType 'delete' to remove every directory listed above: ")
+    if confirmation != "delete":
+        print("Cancelled; nothing was deleted.")
+        return
+
+    for target in targets:
+        if target.is_symlink():
+            target.unlink()
+        else:
+            shutil.rmtree(target)
+
+    print(f"Deleted {len(targets)} directories.")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,39 @@
+{
+  "name": "pi-turn-diff",
+  "version": "0.1.0",
+  "license": "MIT",
+  "engines": {
+    "node": ">=26.0.0 <27"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "src/",
+    "web/",
+    "types/",
+    "tsconfig.json",
+    "plan.md"
+  ],
+  "type": "module",
+  "scripts": {
+    "check": "tsgo --noEmit"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "dependencies": {
+    "glimpseui": "^0.8.1"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@typescript/native-preview": "^7.0.0-dev.20260313.1",
+    "typescript": "^5.9.2"
+  }
+}

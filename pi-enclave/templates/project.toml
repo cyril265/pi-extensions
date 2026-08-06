@@ -1,0 +1,7 @@
+# pi-enclave: run tools in an isolated VM
+# Protects API keys and isolates file access.
+# Enclave is disabled by default. Run /enclave on to enable it for the session.
+
+# Mount directories outside the workspace (relative paths ok, supports ~).
+# Missing paths are silently skipped.
+# mounts = ["../.jj", "../.git"]

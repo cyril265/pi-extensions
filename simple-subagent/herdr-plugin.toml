@@ -1,0 +1,20 @@
+id = "local.simple-subagent"
+name = "Simple Subagent"
+version = "0.2.0"
+min_herdr_version = "0.7.5"
+description = "Run Pi tool subagents in Herdr and navigate them as a group."
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open"
+title = "Open subagents"
+command = [
+  "sh",
+  "-c",
+  'exec "$HERDR_BIN_PATH" plugin pane open --plugin "$HERDR_PLUGIN_ID" --entrypoint subagents',
+]
+
+[[panes]]
+id = "subagents"
+title = "Subagents"
+command = ["node", "herdr/subagents-view.ts"]

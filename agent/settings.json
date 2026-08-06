@@ -1,0 +1,34 @@
+{
+  "defaultProvider": "anthropic",
+  "defaultModel": "claude-opus-5",
+  "defaultThinkingLevel": "xhigh",
+  "packages": [
+    "/absolute/path/to/pi-extensions/presets",
+    "/absolute/path/to/pi-extensions/footer",
+    "/absolute/path/to/pi-extensions/simple-subagent",
+    "/absolute/path/to/pi-extensions/prewalk",
+    "/absolute/path/to/pi-extensions/cwd",
+    "/absolute/path/to/pi-extensions/session-search",
+    "/absolute/path/to/pi-extensions/tool-result-trim",
+    "/absolute/path/to/pi-extensions/provider-system-prompt-append",
+    "/absolute/path/to/pi-extensions/copy-plain",
+    "/absolute/path/to/pi-extensions/warp-notifications",
+    "/absolute/path/to/pi-extensions/herdr-tab-name",
+    "/absolute/path/to/pi-extensions/pi-last-turn-review",
+    "/absolute/path/to/pi-extensions/pi-openai-compaction",
+    "/absolute/path/to/pi-extensions/pi-enclave",
+    "/absolute/path/to/pi-extensions/activate-mcp-aliases.ts",
+    "/absolute/path/to/pi-extensions/cache-retention-long.ts",
+    "/absolute/path/to/pi-extensions/shift-escape.ts"
+  ],
+  "followUpMode": "one-at-a-time",
+  "steeringMode": "one-at-a-time",
+  "hideThinkingBlock": true,
+  "treeFilterMode": "no-tools",
+  "doubleEscapeAction": "tree",
+  "powerline": "compact",
+  "tuiMode": "fullscreen",
+  "compaction": {
+    "enabled": true
+  }
+}

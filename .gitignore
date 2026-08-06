@@ -1,0 +1,12 @@
+.DS_Store
+.idea
+.agent/
+.tmp/
+.pi/
+node_modules/
+.pnpm-store/
+pnpm-lock.yaml
+pnpm-debug.log*
+dist/
+__pycache__/
+pi-pretty/

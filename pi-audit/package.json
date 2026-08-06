@@ -1,0 +1,24 @@
+{
+  "name": "pi-audit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=26.0.0 <27"
+  },
+  "bin": {
+    "pi-audit": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "node src/index.ts",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/cross-spawn": "6.0.6",
+    "@types/node": "^26.1.1",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "cross-spawn": "7.0.6"
+  }
+}
