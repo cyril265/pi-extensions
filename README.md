@@ -31,6 +31,7 @@ Global settings live in `~/.pi/agent/settings.json`, project settings in `.pi/se
 | [`session-search`](session-search) | `sessions-search` tool — searches across previous pi sessions. |
 | [`presets`](presets) | Named presets for model, thinking level, readonly mode, and system prompt, via CLI flag, `/preset`, or Ctrl+Shift+U. |
 | [`provider-system-prompt-append`](provider-system-prompt-append) | Applies a provider-specific `APPEND_SYSTEM.md` per turn. |
+| [`prompt-template-shell`](prompt-template-shell) | Claude Code-style `` !`command` `` dynamic context in prompt templates. |
 | [`warp-notifications`](warp-notifications) | Emits Warp's OSC 777 CLI-agent protocol so completions and prompts hit Warp's agent inbox. |
 | [`herdr-tab-name`](herdr-tab-name) | Names the session and its herdr tab from the task, with manual renames winning. |
 | [`piq`](piq) | One-shot `pi` wrappers — `pil`, `pim`, `pic` — for quick prompts at fixed reasoning levels. |

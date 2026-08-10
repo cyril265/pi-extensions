@@ -1,10 +1,11 @@
 {
-  "name": "pi-provider-system-prompt-append",
-  "version": "0.2.0",
+  "name": "pi-prompt-template-shell",
+  "version": "0.1.0",
   "private": true,
   "engines": {
     "node": ">=26.0.0 <27"
   },
+  "type": "module",
   "keywords": [
     "pi-package",
     "pi-extension"
@@ -16,5 +17,13 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^5.9.0"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "node --test index.test.ts"
   }
 }

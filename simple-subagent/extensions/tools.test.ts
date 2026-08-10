@@ -28,6 +28,7 @@ test('lists configured aliases only in the isolated subagent tool description', 
   const pi = {
     registerTool: (tool: { name: string; description: string }) => tools.push(tool),
     registerMessageRenderer: () => {},
+    registerCommand: () => {},
     on: (event: string, handler: unknown) => {
       if (event === 'session_start') {
         startSession = handler as typeof startSession
@@ -57,12 +58,13 @@ test('locks subagent tools only for managed process startup', () => {
 })
 
 test('removes and restores registered subagent tools without changing other tools', () => {
-  let activeTools = ['read', 'runSubAgents', 'runSubAgentsWithContext']
+  let activeTools = ['read', 'runSubAgents', 'collectSubagents', 'runSubAgentsWithContext']
   const pi = {
     getActiveTools: () => activeTools,
     getAllTools: () => [
       { name: 'read' },
       { name: 'runSubAgents' },
+      { name: 'collectSubagents' },
       { name: 'runSubAgentsWithContext' },
     ],
     setActiveTools: (names: string[]) => {
@@ -74,5 +76,61 @@ test('removes and restores registered subagent tools without changing other tool
   assert.deepEqual(activeTools, ['read'])
 
   setSubagentToolsActive(pi, true)
-  assert.deepEqual(activeTools, ['read', 'runSubAgents', 'runSubAgentsWithContext'])
+  assert.deepEqual(activeTools, [
+    'read',
+    'runSubAgents',
+    'collectSubagents',
+    'runSubAgentsWithContext',
+  ])
+})
+
+test('pushes a fork spawn failure from turn_end as a follow-up', async () => {
+  const tools: Array<{
+    name: string
+    execute: (...args: any[]) => Promise<{ content: Array<{ type: string; text: string }> }>
+  }> = []
+  const handlers = new Map<string, (...args: any[]) => unknown>()
+  const sent: Array<{ message: { customType: string; content: string }; options: unknown }> = []
+  const pi = {
+    registerTool: (tool: (typeof tools)[number]) => tools.push(tool),
+    registerMessageRenderer: () => {},
+    registerCommand: () => {},
+    on: (event: string, handler: (...args: any[]) => unknown) => handlers.set(event, handler),
+    getThinkingLevel: () => 'high',
+    sendMessage: (message: { customType: string; content: string }, options: unknown) => {
+      sent.push({ message, options })
+    },
+  } as unknown as ExtensionAPI
+  const ctx = {
+    cwd: '/tmp',
+    mode: 'json',
+    model: { provider: 'test', id: 'model' },
+    isIdle: () => false,
+    sessionManager: {
+      getSessionFile: () => undefined,
+    },
+  }
+
+  registerSubagentTools(pi, false, { enableForkTool: true, modelAliases: {} })
+  handlers.get('session_start')?.({ reason: 'startup' }, ctx)
+  const forkTool = tools.find(tool => tool.name === 'runSubAgentsWithContext')
+  assert.ok(forkTool)
+  const dispatch = await forkTool.execute(
+    'fork-call',
+    { agents: [{ name: 'reviewer', prompt: 'Review', sessionKey: 'fork-key' }] },
+    undefined,
+    undefined,
+    ctx,
+  )
+  assert.match(dispatch.content[0].text, /jobId:/)
+
+  await handlers.get('turn_end')?.({}, ctx)
+
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].message.customType, 'forked-subagent-results')
+  assert.match(
+    sent[0].message.content,
+    /Forked subagents failed: Parent context can only be forked from a persisted session/,
+  )
+  assert.deepEqual(sent[0].options, { deliverAs: 'followUp' })
 })

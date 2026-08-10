@@ -1,9 +1,16 @@
 # simple-subagent
 
-Tiny pi extension. Adds one tool and an optional fork tool:
+Pi extension for asynchronous subagents:
 
-- `runSubAgents({ agents: [...] })` runs isolated agents and returns result file paths
-- `runSubAgentsWithContext({ agents: [...] })` forks the parent context into child agents; disabled by default
+- `runSubAgents({ agents: [...] })` dispatches isolated agents and immediately returns a job ID and session keys
+- `collectSubagents({ jobId })` waits for results not already delivered
+- `runSubAgentsWithContext({ agents: [...] })` asynchronously forks the parent context; disabled by default
+- `/subagents` lists running jobs; `/subagents cancel <jobId>` cancels one
+
+When a job settles, uncollected results are pushed into the parent conversation. Pi queues the
+message as a follow-up while streaming or starts a result-processing turn while idle. Cancelling
+a waiting `collectSubagents` call leaves the job running. Jobs are cancelled on session shutdown,
+`/new`, session switches, and `/subagents cancel`.
 
 When Pi runs inside Herdr, tool subagents run in real Herdr panes instead of hidden child
 processes. They are hidden from Herdr's built-in Agents view and appear in the grouped
@@ -92,9 +99,11 @@ The projection ends when the server exits or the companion plugin is disabled or
 - `thinking`: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`
 - `prompt`: prompt sent to child pi process
 - result output includes separate usage lines with turns, token/cache breakdown, and cost (`cache read`/`cache write` stay separate from input tokens)
+- results of 2048 characters or fewer are inlined alongside the result path
 - `cwd`: working directory for child pi run
 
-Tool runs separate `pi` process in JSON mode.
+Each agent runs in a separate `pi` process in JSON/print mode. Dispatch does not wait for it.
+In parent print or JSON single-shot mode, Pi holds the process open at `turn_end` until all jobs settle.
 
 Inside Herdr, each parallel tool call gets a background tab named after its parent. Every
 subagent runs a normal interactive Pi TUI in that tab, while the tool receives progress and
@@ -132,7 +141,7 @@ Session behavior:
 - generated and supplied sessions live in `<pi agent dir>/sessions/--simple-subagent--/`
 - managed session filenames use `subagent-<cwd hash>-<sessionKey>.jsonl`
 - the result includes the session key; reuse it to resume the child
-- cancelled and failed runs report their session keys so the parent can continue them
+- cancelled and failed jobs report their session keys so the parent can continue them
 - partial failures retain successful result paths, report each failed agent inline, and mark
   the tool result as an error
 - do not run the same `cwd + sessionKey` twice in one parallel call
@@ -149,9 +158,9 @@ Enable the separate fork tool with `enableForkTool` in `~/.pi/agent/simple-subag
 - the fork includes the completed `runSubAgentsWithContext` tool result, so the child receives valid parent context without a dangling tool call
 - `runSubAgentsWithContext` accepts `name`, `prompt`, and optional `sessionKey`; model, thinking level, and cwd are inherited and locked
 - fork sessions inherit the parent session ID and prompt cache key so OpenAI routes parent and child requests to the same cache identity across processes and connections
-- fork execution starts after the scheduling turn has persisted its tool result
+- fork dispatch returns `terminate: true`; execution starts after the scheduling turn has persisted its tool result
 - fork progress and child tool calls are shown live above the editor, then retained in the result message
-- completed fork results are injected as a normal follow-up before the next model request
+- completed fork results use the same collect-or-push delivery as isolated jobs
 - each fork reports first-turn parent-cache usage explicitly without conflating cache telemetry with child execution success
 
 - `/forkTab` forks the current session into a new interactive Herdr tab, inherits the model and thinking level, and sends no prompt

@@ -186,6 +186,26 @@ export async function getHerdrParentLabel(fallback: string, cwd: string): Promis
   return (await runHerdr(['tab', 'get', tabId], cwd)).result?.tab?.label || fallback
 }
 
+export async function notifyHerdrSubagentsFinished(
+  cwd: string,
+  doneCount: number,
+  failedCount: number,
+): Promise<void> {
+  await runHerdr(
+    [
+      'notification',
+      'show',
+      'Subagents finished',
+      '--body',
+      `${doneCount} done, ${failedCount} failed`,
+      '--sound',
+      'done',
+    ],
+    cwd,
+    false,
+  ).catch(() => {})
+}
+
 function getChildEnvironment(agent: SpawnedHerdrAgent): Record<string, string> {
   return {
     [SIMPLE_SUBAGENT_PROCESS_ENV]: '1',
@@ -662,22 +682,5 @@ export async function runSubagentsInHerdr(
       error: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
     }
   })
-  const doneCount = results.filter(
-    outcome => 'result' in outcome && outcome.result.exitCode === 0,
-  ).length
-  const failedCount = results.length - doneCount
-  await runHerdr(
-    [
-      'notification',
-      'show',
-      'Subagents finished',
-      '--body',
-      `${doneCount} done, ${failedCount} failed`,
-      '--sound',
-      'done',
-    ],
-    firstAgent.cwd,
-    false,
-  ).catch(() => {})
   return results
 }

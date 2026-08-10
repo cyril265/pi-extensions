@@ -1,39 +1,99 @@
+import { randomUUID } from 'node:crypto'
 import { StringEnum } from '@earendil-works/pi-ai'
-import type { ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-agent'
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { Text } from '@earendil-works/pi-tui'
 import { Type } from 'typebox'
 import type { SimpleSubagentConfig } from './config.ts'
 import { formatResultText, renderAgentsOverview, renderSubagentDetails } from './display.ts'
-import { executeSubagents } from './execute-subagents.ts'
+import { startJob } from './execute-subagents.ts'
+import { notifyHerdrSubagentsFinished } from './herdr-runner.ts'
+import {
+  getPushOptions,
+  holdPrintModeJobs,
+  JobRegistry,
+  type SubagentJob,
+  type SubagentJobKind,
+  type SubagentJobResult,
+} from './jobs.ts'
 import { resolveSubagentSessionKey } from './sessions.ts'
 import type { SubagentRequest, SubagentResultDetails, ThinkingLevel } from './types.ts'
 
 const SIMPLE_SUBAGENT_FORK_TOOL_ENV = 'PI_SIMPLE_SUBAGENT_FORK_TOOL'
-const FORK_PROGRESS_WIDGET = 'simple-subagent-fork-progress'
-const SUBAGENT_TOOL_NAMES = new Set(['runSubAgents', 'runSubAgentsWithContext'])
+const SUBAGENT_TOOL_NAMES = new Set([
+  'runSubAgents',
+  'collectSubagents',
+  'runSubAgentsWithContext',
+])
 type SubagentToolActivationApi = {
   getActiveTools(): string[]
   getAllTools(): Array<{ name: string }>
   setActiveTools(names: string[]): void
 }
 type PendingForkJob = {
+  jobId: string
   toolCallId: string
-  agents: Array<{ name: string; prompt: string; sessionKey: string }>
+  agents: Array<{ name: string; prompt: string; sessionKey: string; forkParent: true }>
+}
+type DeliveredSubagentJob = {
+  jobId: string
+  kind: SubagentJobKind
+  result: SubagentJobResult
 }
 type ForkedSubagentResultsDetails = {
-  jobs: SubagentResultDetails[]
+  jobs: DeliveredSubagentJob[]
 }
 
-function getResultText(result: { content: Array<{ type: string; text?: string }> }): string {
-  return result.content
+function getMessageText(content: string | Array<{ type: string; text?: string }>): string {
+  if (typeof content === 'string') return content
+  return content
     .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
     .map(part => part.text)
     .join('\n')
 }
 
-// When a provider path advertises no schema for this tool (for example Anthropic OAuth payload
-// filtering hiding it from the model), tool-call parameters arrive as raw JSON strings. Parse
-// them back into the declared shape before validation.
+function createScheduledDetails(
+  agents: PendingForkJob['agents'],
+  ctx: ExtensionContext,
+  thinking: ThinkingLevel,
+): SubagentResultDetails {
+  const effectiveModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined
+  return {
+    agents: agents.map(agent => ({
+      name: agent.name,
+      prompt: agent.prompt,
+      cwd: ctx.cwd,
+      sessionKey: agent.sessionKey,
+      thinking,
+      effectiveModel,
+      forkParent: true,
+      status: 'queued',
+      tools: [],
+    })),
+  }
+}
+
+function createForkFailureResult(
+  details: SubagentResultDetails,
+  error: unknown,
+  aborted: boolean,
+): SubagentJobResult {
+  return {
+    text: `Forked subagents failed: ${error instanceof Error ? error.message : String(error)}`,
+    details: {
+      ...details,
+      agents: details.agents.map(agent => ({
+        ...agent,
+        status: aborted ? 'interrupted' : 'failed',
+      })),
+    },
+    isError: true,
+  }
+}
+
+function formatElapsed(startedAt: number): string {
+  return `${Math.max(0, Math.floor((Date.now() - startedAt) / 1000))}s`
+}
+
 export function parseStringifiedAgents<T extends { agents?: unknown }>(args: unknown): T {
   if (
     typeof args === 'object' &&
@@ -78,8 +138,50 @@ export function registerSubagentTools(
   config: SimpleSubagentConfig,
 ) {
   const pendingForkJobs: PendingForkJob[] = []
-  let processingForkJobs = false
+  const jobContexts = new Map<string, ExtensionContext>()
   let subagentToolsUnlocked = !isSubagentProcess
+  const jobs = new JobRegistry({
+    onProgress(job, details) {
+      const ctx = jobContexts.get(job.id)
+      if (!ctx || ctx.mode !== 'tui') return
+      ctx.ui.setWidget(`simple-subagent-${job.id}`, (_tui, theme) =>
+        new Text(
+          renderSubagentDetails(
+            details,
+            false,
+            theme,
+            job.kind === 'fork' ? 'runSubAgentsWithContext' : 'runSubAgents',
+          ),
+          0,
+          0,
+        ),
+      )
+    },
+    onSettled(job, result) {
+      const ctx = jobContexts.get(job.id)
+      if (ctx?.mode === 'tui') ctx.ui.setWidget(`simple-subagent-${job.id}`, undefined)
+      if (result.herdrNotification) {
+        const { cwd, doneCount, failedCount } = result.herdrNotification
+        void notifyHerdrSubagentsFinished(cwd, doneCount, failedCount)
+      }
+    },
+    onPush(job, result) {
+      const ctx = jobContexts.get(job.id)
+      if (!ctx) throw new Error(`Missing context for subagent job ${job.id}`)
+      pi.sendMessage(
+        {
+          customType: 'forked-subagent-results',
+          content: `Subagent job ${job.id} finished:\n\n${result.text}`,
+          display: true,
+          details: {
+            jobs: [{ jobId: job.id, kind: job.kind, result }],
+          } satisfies ForkedSubagentResultsDetails,
+        },
+        getPushOptions(ctx.isIdle()),
+      )
+    },
+  })
+
   const runSubAgentsParameters = Type.Object({
     agents: Type.Array(
       Type.Object({
@@ -92,14 +194,11 @@ export function registerSubagentTools(
       }),
     ),
   })
-  const runSubAgentsTool: ToolDefinition<
-    typeof runSubAgentsParameters,
-    SubagentResultDetails | undefined
-  > = {
+  const runSubAgentsTool: ToolDefinition<typeof runSubAgentsParameters, undefined> = {
     name: 'runSubAgents',
     label: 'Run Subagents',
     description: `
-        Run isolated subagents & returns result file paths. Use only when requested. A subagent has no knowledge of the parent context, so provide complete instructions.
+        Dispatch isolated subagents and return a job ID plus session keys immediately. Use only when requested. A subagent has no knowledge of the parent context, so provide complete instructions. Use collectSubagents to wait for a job.
         sessionKey: Optional reusable session name. If omitted, a durable name-based key with an 8-character mixed-case alphanumeric suffix is generated and returned. Reuse a key only for follow-up work that benefits from its existing context, and use distinct keys for agents in the same call.
         overrideModel: supply only if requested. ${Object.keys(config.modelAliases).length > 0 ? `options ${Object.keys(config.modelAliases).join(', ')}` : 'use provider/model'}
         thinking: low|medium|high|xhigh|max
@@ -119,32 +218,97 @@ export function registerSubagentTools(
         0,
       )
     },
-    renderResult(result, { expanded }, theme) {
-      const content = result.content[0]
-      const text = content?.type === 'text' ? content.text : '(no output)'
-      const details = result.details
-
-      if (details?.agents?.length) {
-        return new Text(renderSubagentDetails(details, expanded, theme), 0, 0)
-      }
-
-      return new Text(`\n${theme.fg('muted', 'results:')}\n${formatResultText(text, theme)}`, 0, 0)
+    renderResult(result, _options, theme) {
+      return new Text(`\n${theme.fg('muted', 'dispatch:')}\n${formatResultText(getMessageText(result.content), theme)}`, 0, 0)
     },
-    async execute(toolCallId, params, signal, onUpdate, ctx) {
-      return executeSubagents(
-        pi,
-        subagentToolsUnlocked,
-        config.modelAliases,
-        toolCallId,
-        params.agents as SubagentRequest[],
-        signal,
-        onUpdate,
-        ctx,
-      )
+    async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+      const jobId = randomUUID()
+      jobContexts.set(jobId, ctx)
+      try {
+        const job = startJob(
+          pi,
+          jobs,
+          jobId,
+          'isolated',
+          subagentToolsUnlocked,
+          config.modelAliases,
+          toolCallId,
+          params.agents as SubagentRequest[],
+          ctx,
+        )
+        return {
+          content: [
+            {
+              type: 'text',
+              text: [
+                `Subagents dispatched. jobId: ${job.id}`,
+                ...job.agents.map(agent => `${agent.name} sessionKey: ${agent.sessionKey}`),
+                `Collect with collectSubagents({ jobId: "${job.id}" }).`,
+              ].join('\n'),
+            },
+          ],
+          details: undefined,
+        }
+      } catch (error) {
+        jobContexts.delete(jobId)
+        throw error
+      }
     },
   }
 
   pi.registerTool(runSubAgentsTool)
+
+  const collectSubagentsParameters = Type.Object({
+    jobId: Type.String(),
+  })
+  const collectSubagentsTool: ToolDefinition<
+    typeof collectSubagentsParameters,
+    SubagentResultDetails | undefined
+  > = {
+    name: 'collectSubagents',
+    label: 'Collect Subagents',
+    description:
+      'Wait for a dispatched subagent job and return results that have not already been delivered. Cancelling this tool does not cancel the job.',
+    parameters: collectSubagentsParameters,
+    renderCall(args, theme) {
+      return new Text(
+        `${theme.fg('toolTitle', theme.bold('collectSubagents'))} ${theme.fg('accent', args.jobId)}`,
+        0,
+        0,
+      )
+    },
+    renderResult(result, { expanded }, theme) {
+      if (result.details?.agents.length) {
+        return new Text(renderSubagentDetails(result.details, expanded, theme), 0, 0)
+      }
+      return new Text(formatResultText(getMessageText(result.content), theme), 0, 0)
+    },
+    async execute(_toolCallId, params, signal) {
+      const result = await jobs.collect(params.jobId, signal)
+      if (!result) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Job ${params.jobId} has no undelivered results.`,
+            },
+          ],
+          details: undefined,
+        }
+      }
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Subagent job ${params.jobId} finished:\n${result.text}`,
+          },
+        ],
+        details: result.details,
+      }
+    },
+  }
+
+  pi.registerTool(collectSubagentsTool)
 
   const runSubAgentsWithContextParameters = Type.Object({
     agents: Type.Array(
@@ -157,13 +321,13 @@ export function registerSubagentTools(
   })
   const runSubAgentsWithContextTool: ToolDefinition<
     typeof runSubAgentsWithContextParameters,
-    SubagentResultDetails | undefined
+    undefined
   > = {
     ...runSubAgentsTool,
     name: 'runSubAgentsWithContext',
     label: 'Run Subagents With Context',
     description: `
-      Fork the parent context into parallel subagents and return result file paths. Use only when requested.
+      Fork the parent context into parallel subagents and return a job ID plus session keys immediately. Use only when requested.
       Each child inherits and locks the parent's cwd, provider/model, and thinking level.
       sessionKey: Optional reusable fork name. If omitted, a durable name-based key with an 8-character mixed-case alphanumeric suffix is generated and returned.
     `,
@@ -184,37 +348,49 @@ export function registerSubagentTools(
         0,
       )
     },
-    renderResult(result, { expanded }, theme) {
-      const content = result.content[0]
-      const text = content?.type === 'text' ? content.text : '(no output)'
-      const details = result.details
-
-      if (details?.agents.length) {
-        return new Text(renderSubagentDetails(details, expanded, theme), 0, 0)
-      }
-
-      return new Text(`\n${theme.fg('muted', 'results:')}\n${formatResultText(text, theme)}`, 0, 0)
+    renderResult(result, _options, theme) {
+      return new Text(
+        `\n${theme.fg('muted', 'dispatch:')}\n${formatResultText(getMessageText(result.content), theme)}`,
+        0,
+        0,
+      )
     },
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {
       if (!subagentToolsUnlocked) {
         throw new Error('Subagent tools are locked during the parent-assigned run')
       }
       if (params.agents.length === 0) throw new Error('No agents')
+      if (!ctx.model) throw new Error('Parent context has no caller model')
       const agents = params.agents.map(agent => ({
         ...agent,
         sessionKey: resolveSubagentSessionKey(ctx.cwd, agent.name, agent.sessionKey),
+        forkParent: true as const,
       }))
-      pendingForkJobs.push({
-        toolCallId,
+      if (new Set(agents.map(agent => agent.sessionKey)).size !== agents.length) {
+        throw new Error('Duplicate subagent sessionKey for same cwd in one parallel run')
+      }
+      const jobId = randomUUID()
+      const details = createScheduledDetails(
         agents,
-      })
+        ctx,
+        pi.getThinkingLevel() as ThinkingLevel,
+      )
+      jobContexts.set(jobId, ctx)
+      jobs.reserve(
+        jobId,
+        'fork',
+        agents.map(agent => ({ name: agent.name, sessionKey: agent.sessionKey })),
+        (error, aborted) => createForkFailureResult(details, error, aborted),
+      )
+      pendingForkJobs.push({ jobId, toolCallId, agents })
       return {
         content: [
           {
             type: 'text',
             text: [
-              'Forked subagents scheduled.',
+              `Forked subagents scheduled. jobId: ${jobId}`,
               ...agents.map(agent => `${agent.name} sessionKey: ${agent.sessionKey}`),
+              `Collect with collectSubagents({ jobId: "${jobId}" }).`,
             ].join('\n'),
           },
         ],
@@ -226,27 +402,54 @@ export function registerSubagentTools(
 
   pi.registerMessageRenderer('forked-subagent-results', (message, { expanded }, theme) => {
     const details = message.details as ForkedSubagentResultsDetails | undefined
-    if (!details?.jobs.length) {
-      const content =
-        typeof message.content === 'string'
-          ? message.content
-          : message.content
-              .filter(part => part.type === 'text')
-              .map(part => part.text)
-              .join('\n')
-      return new Text(content, 0, 0)
-    }
+    if (!details?.jobs.length) return new Text(getMessageText(message.content), 0, 0)
     return new Text(
       details.jobs
-        .map(job => renderSubagentDetails(job, expanded, theme, 'runSubAgentsWithContext'))
+        .map(job => {
+          const title = job.kind === 'fork' ? 'runSubAgentsWithContext' : 'runSubAgents'
+          return `${theme.fg('muted', `job ${job.jobId}`)}\n${renderSubagentDetails(job.result.details, expanded, theme, title)}`
+        })
         .join('\n\n'),
       0,
       0,
     )
   })
 
+  pi.registerCommand('subagents', {
+    description: 'List running subagent jobs or cancel one with /subagents cancel <jobId>.',
+    handler: async (args, ctx) => {
+      const parts = args.trim().split(/\s+/).filter(Boolean)
+      if (parts.length === 0) {
+        const running = jobs.listRunning()
+        if (running.length === 0) {
+          ctx.ui.notify('No running subagent jobs', 'info')
+          return
+        }
+        ctx.ui.notify(
+          running
+            .flatMap(job => [
+              `${job.id} (${formatElapsed(job.startedAt)})`,
+              ...job.agents.map(agent => `${agent.name}: ${agent.state}`),
+            ])
+            .join('\n'),
+          'info',
+        )
+        return
+      }
+      if (parts.length !== 2 || parts[0] !== 'cancel') {
+        ctx.ui.notify('Usage: /subagents [cancel <jobId>]', 'warning')
+        return
+      }
+      const cancelled = jobs.cancel(parts[1])
+      ctx.ui.notify(
+        cancelled ? `Cancelled subagent job ${parts[1]}` : `No running job ${parts[1]}`,
+        cancelled ? 'info' : 'warning',
+      )
+    },
+  })
+
   let forkToolRegistered = false
-  pi.on('session_start', (event, _ctx) => {
+  pi.on('session_start', event => {
     if (!forkToolRegistered) {
       const enabledByParent = process.env[SIMPLE_SUBAGENT_FORK_TOOL_ENV] === '1'
       if (enabledByParent || config.enableForkTool) {
@@ -267,65 +470,38 @@ export function registerSubagentTools(
   })
 
   pi.on('turn_end', async (_event, ctx) => {
-    if (processingForkJobs || pendingForkJobs.length === 0) return
-    processingForkJobs = true
-    const signal = ctx.signal
-    const jobs = pendingForkJobs.splice(0)
-    const messages: string[] = []
-    const resultDetails: SubagentResultDetails[] = []
-
-    try {
-      for (const job of jobs) {
-        if (signal?.aborted) break
-        let latestDetails: SubagentResultDetails | undefined
-        try {
-          const result = await executeSubagents(
-            pi,
-            subagentToolsUnlocked,
-            config.modelAliases,
-            job.toolCallId,
-            job.agents.map(agent => ({ ...agent, forkParent: true })),
-            signal,
-            update => {
-              const details = update.details
-              if (!details) return
-              latestDetails = details
-              if (ctx.mode !== 'tui') return
-              ctx.ui.setWidget(
-                FORK_PROGRESS_WIDGET,
-                (_tui, theme) =>
-                  new Text(
-                    renderSubagentDetails(details, false, theme, 'runSubAgentsWithContext'),
-                    0,
-                    0,
-                  ),
-              )
-            },
-            ctx,
-          )
-          messages.push(getResultText(result))
-        } catch (error) {
-          if (signal?.aborted) break
-          messages.push(
-            `Forked subagents failed: ${error instanceof Error ? error.message : String(error)}`,
-          )
-        }
-        if (latestDetails) resultDetails.push(latestDetails)
+    const scheduled = pendingForkJobs.splice(0)
+    for (const pending of scheduled) {
+      if (!jobs.isRunning(pending.jobId)) continue
+      try {
+        startJob(
+          pi,
+          jobs,
+          pending.jobId,
+          'fork',
+          subagentToolsUnlocked,
+          config.modelAliases,
+          pending.toolCallId,
+          pending.agents,
+          ctx,
+        )
+      } catch (error) {
+        const job = jobs.get(pending.jobId)
+        if (!job || !jobs.isRunning(pending.jobId)) continue
+        const details = createScheduledDetails(
+          pending.agents,
+          ctx,
+          pi.getThinkingLevel() as ThinkingLevel,
+        )
+        jobs.fail(pending.jobId, createForkFailureResult(details, error, false))
       }
-
-      if (signal?.aborted) return
-      pi.sendMessage(
-        {
-          customType: 'forked-subagent-results',
-          content: `Forked subagent results:\n\n${messages.join('\n\n')}`,
-          display: true,
-          details: { jobs: resultDetails } satisfies ForkedSubagentResultsDetails,
-        },
-        { deliverAs: 'followUp', triggerTurn: true },
-      )
-    } finally {
-      if (ctx.mode === 'tui') ctx.ui.setWidget(FORK_PROGRESS_WIDGET, undefined)
-      processingForkJobs = false
     }
+    await holdPrintModeJobs(ctx.mode, jobs)
+  })
+
+  pi.on('session_shutdown', async () => {
+    pendingForkJobs.length = 0
+    await jobs.shutdown()
+    jobContexts.clear()
   })
 }

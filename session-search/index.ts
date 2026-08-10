@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import { basename, isAbsolute, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent'
-import { FileFinder, type GrepMatch } from '@ff-labs/fff-node'
+import { FileFinder, type GrepCursor, type GrepMatch } from '@ff-labs/fff-node'
 import { Type } from 'typebox'
 
 type SessionHeader = {
@@ -112,6 +112,11 @@ function resolveSessionsDir(ctx: ExtensionCommandContext): string {
   }
 
   return configuredSessionDir(ctx)
+}
+
+function resolveCurrentSessionFile(ctx: ExtensionCommandContext): string | undefined {
+  const sessionFile = ctx.sessionManager.getSessionFile()
+  return sessionFile ? resolvePath(sessionFile, ctx.cwd) : undefined
 }
 
 async function ensureFinder(basePath: string): Promise<FileFinder> {
@@ -423,6 +428,50 @@ async function hydrateMatches(
   })
 }
 
+async function grepPreviousSessions(
+  finder: FileFinder,
+  sessionsDir: string,
+  args: ToolSearchArgs,
+  currentSessionFile: string | undefined,
+): Promise<GrepMatch[]> {
+  const matches: GrepMatch[] = []
+  const query = args.caseSensitive ? args.query : args.query.toLowerCase()
+  let cursor: GrepCursor | null = null
+
+  while (matches.length < args.maxResults) {
+    const grep = finder.grep(query, {
+      mode: 'plain',
+      smartCase: !args.caseSensitive,
+      cursor,
+      pageSize: args.maxResults,
+      maxFileSize: MAX_SESSION_FILE_SIZE,
+    })
+
+    if (!grep.ok) {
+      throw new Error(grep.error)
+    }
+
+    for (const match of grep.value.items) {
+      const absolutePath = resolve(sessionsDir, match.relativePath)
+      if (absolutePath === currentSessionFile) {
+        continue
+      }
+
+      matches.push(match)
+      if (matches.length === args.maxResults) {
+        break
+      }
+    }
+
+    if (!grep.value.nextCursor) {
+      break
+    }
+    cursor = grep.value.nextCursor
+  }
+
+  return matches
+}
+
 async function searchSessionsForTool(
   args: ToolSearchArgs,
   ctx: ExtensionCommandContext,
@@ -431,19 +480,13 @@ async function searchSessionsForTool(
   const finder = await ensureFinder(sessionsDir)
   await rescan(finder)
 
-  const grep = finder.grep(args.caseSensitive ? args.query : args.query.toLowerCase(), {
-    mode: 'plain',
-    smartCase: !args.caseSensitive,
-    cursor: null,
-    pageSize: args.maxResults,
-    maxFileSize: MAX_SESSION_FILE_SIZE,
-  })
-
-  if (!grep.ok) {
-    throw new Error(grep.error)
-  }
-
-  const hydrated = await hydrateMatches(grep.value.items, sessionsDir, args)
+  const matches = await grepPreviousSessions(
+    finder,
+    sessionsDir,
+    args,
+    resolveCurrentSessionFile(ctx),
+  )
+  const hydrated = await hydrateMatches(matches, sessionsDir, args)
   if (hydrated.length === 0) {
     return `No session matches for: ${args.query}`
   }
@@ -460,7 +503,8 @@ export default function sessionSearchExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: 'sessions-search',
     label: 'Sessions',
-    description: 'Search pi sessions. use only if explicitely requested by user.',
+    description:
+      'Search previous pi sessions; the current session is always excluded. Use only if explicitly requested by the user.',
     parameters: Type.Object({
       query: Type.String(),
       caseSensitive: Type.Optional(Type.Boolean()),

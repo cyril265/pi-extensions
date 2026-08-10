@@ -11,6 +11,7 @@
     "/absolute/path/to/pi-extensions/session-search",
     "/absolute/path/to/pi-extensions/tool-result-trim",
     "/absolute/path/to/pi-extensions/provider-system-prompt-append",
+    "/absolute/path/to/pi-extensions/prompt-template-shell",
     "/absolute/path/to/pi-extensions/copy-plain",
     "/absolute/path/to/pi-extensions/warp-notifications",
     "/absolute/path/to/pi-extensions/herdr-tab-name",
