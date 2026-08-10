@@ -154,14 +154,4 @@ Enable the separate fork tool with `enableForkTool` in `~/.pi/agent/simple-subag
 - completed fork results are injected as a normal follow-up before the next model request
 - each fork reports first-turn parent-cache usage explicitly without conflating cache telemetry with child execution success
 
-- `/runSubAgent` opens an isolated agent in a Herdr, `cmux`, `tmux`, or Warp split and stores its pi-generated session in the shared subagent directory
-- `/runSubAgentWithContext` opens an interactive fork of the current persisted session in a Herdr, `cmux`, `tmux`, or Warp split and stores the fork in the shared subagent directory
 - `/forkTab` forks the current session into a new interactive Herdr tab, inherits the model and thinking level, and sends no prompt
-
-In Herdr, `/runSubAgent` and `/runSubAgentWithContext` split the current pane to the right,
-focus it, and run the Pi command with the prompt as its argument through `herdr pane run`.
-Because terminal input is buffered, this needs no wait for the new pane's shell prompt, unlike
-`herdr agent start`. Herdr detects the agent in the new pane, so it remains visible in Herdr's
-built-in Agents view; the grouped Subagents overlay is reserved for tool-created runs.
-
-Warp support uses AppleScript: it opens a right split with `Cmd-D`, pastes the command, and presses Enter. macOS may ask for Accessibility permission for the terminal app running `pi`.

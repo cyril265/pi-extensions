@@ -3,7 +3,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { openHerdrForkTab, openMuxSplit } from './terminal.ts'
+import { openHerdrForkTab } from './herdr-tab.ts'
 
 const HERDR_ENV_NAMES = [
   'HERDR_BIN_PATH',
@@ -12,100 +12,6 @@ const HERDR_ENV_NAMES = [
   'HERDR_WORKSPACE_ID',
   'SIMPLE_SUBAGENT_TEST_LOG',
 ] as const
-
-test('opens and prompts isolated and forked agents in Herdr', async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), 'simple-subagent-terminal-'))
-  const executable = path.join(directory, 'herdr')
-  const logPath = path.join(directory, 'calls.jsonl')
-  const previousEnvironment = new Map(
-    HERDR_ENV_NAMES.map(name => [name, process.env[name]] as const),
-  )
-
-  try {
-    await writeFile(
-      executable,
-      `#!/usr/bin/env node
-import { appendFileSync } from 'node:fs'
-const args = process.argv.slice(2)
-appendFileSync(process.env.SIMPLE_SUBAGENT_TEST_LOG, JSON.stringify(args) + '\\n')
-if (args[0] === 'pane' && args[1] === 'split') {
-  console.log(JSON.stringify({ result: { pane: { pane_id: 'w1:p2' } } }))
-} else {
-  console.log(JSON.stringify({ result: {} }))
-}
-`,
-    )
-    await chmod(executable, 0o755)
-    process.env.HERDR_BIN_PATH = executable
-    process.env.HERDR_ENV = '1'
-    process.env.HERDR_PANE_ID = 'w1:p1'
-    process.env.HERDR_WORKSPACE_ID = 'w1'
-    process.env.SIMPLE_SUBAGENT_TEST_LOG = logPath
-
-    openMuxSplit(
-      'Review the diff\nand report findings.',
-      'anthropic/claude-sonnet-4-5',
-      'high',
-      directory,
-      '/tmp/subagent-sessions',
-    )
-    openMuxSplit(
-      'Continue the review.',
-      'openai/gpt-5.4',
-      'xhigh',
-      directory,
-      '/tmp/subagent-sessions',
-      {
-        sessionPath: '/tmp/parent-session.jsonl',
-        promptCacheKey: 'parent-session-id',
-      },
-    )
-
-    const calls = (await readFile(logPath, 'utf8'))
-      .trim()
-      .split('\n')
-      .map(line => JSON.parse(line) as string[])
-    assert.equal(calls.length, 4)
-    assert.deepEqual(calls[0], [
-      'pane',
-      'split',
-      '--current',
-      '--direction',
-      'right',
-      '--cwd',
-      directory,
-      '--focus',
-    ])
-    assert.deepEqual(calls[1], [
-      'pane',
-      'run',
-      'w1:p2',
-      "PI_SIMPLE_SUBAGENT=1 'pi' '--session-dir' '/tmp/subagent-sessions' '--model' 'anthropic/claude-sonnet-4-5' '--thinking' 'high' 'Review the diff\nand report findings.'",
-    ])
-    assert.deepEqual(calls[2], [
-      'pane',
-      'split',
-      '--current',
-      '--direction',
-      'right',
-      '--cwd',
-      directory,
-      '--focus',
-    ])
-    assert.deepEqual(calls[3], [
-      'pane',
-      'run',
-      'w1:p2',
-      "PI_SIMPLE_SUBAGENT=1 PI_SIMPLE_SUBAGENT_CACHE_KEY='parent-session-id' 'pi' '--session-dir' '/tmp/subagent-sessions' '--fork' '/tmp/parent-session.jsonl' '--model' 'openai/gpt-5.4' '--thinking' 'xhigh' 'Continue the review.'",
-    ])
-  } finally {
-    for (const [name, value] of previousEnvironment) {
-      if (value === undefined) delete process.env[name]
-      else process.env[name] = value
-    }
-    await rm(directory, { recursive: true })
-  }
-})
 
 test('opens a personal session fork in a new Herdr tab', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'simple-subagent-fork-tab-'))
@@ -136,12 +42,7 @@ if (args[0] === 'tab' && args[1] === 'create') {
     process.env.HERDR_WORKSPACE_ID = 'w1'
     process.env.SIMPLE_SUBAGENT_TEST_LOG = logPath
 
-    openHerdrForkTab(
-      'openai/gpt-5.4',
-      'xhigh',
-      directory,
-      '/tmp/parent session.jsonl',
-    )
+    openHerdrForkTab('openai/gpt-5.4', 'xhigh', directory, '/tmp/parent session.jsonl')
 
     const calls = (await readFile(logPath, 'utf8'))
       .trim()
