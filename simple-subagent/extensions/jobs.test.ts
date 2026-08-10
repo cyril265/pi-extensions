@@ -1,11 +1,26 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  createJobId,
   getPushOptions,
   holdPrintModeJobs,
   JobRegistry,
   type SubagentJobResult,
 } from './jobs.ts'
+
+test('creates eight-character job ids and retries collisions', () => {
+  const generated = [
+    'deadbeef-0000-0000-0000-000000000000',
+    'cafebabe-0000-0000-0000-000000000000',
+  ]
+  const id = createJobId(
+    candidate => candidate === 'deadbeef',
+    () => generated.shift() as string,
+  )
+
+  assert.equal(id, 'cafebabe')
+  assert.equal(id.length, 8)
+})
 
 function result(text = 'done'): SubagentJobResult {
   return {

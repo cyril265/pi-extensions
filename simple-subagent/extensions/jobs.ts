@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { SubagentResultDetails } from './types.ts'
 
 export type SubagentJobKind = 'isolated' | 'fork'
@@ -64,6 +65,17 @@ type StartJobInput = {
 
 function abortError(): DOMException {
   return new DOMException('Collect aborted', 'AbortError')
+}
+
+export function createJobId(
+  exists: (id: string) => boolean,
+  generate: () => string = randomUUID,
+): string {
+  let id: string
+  do {
+    id = generate().slice(0, 8)
+  } while (exists(id))
+  return id
 }
 
 export class JobRegistry {

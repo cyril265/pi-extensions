@@ -4,6 +4,7 @@ import type { Theme } from '@earendil-works/pi-coding-agent'
 import type {
   AgentDisplayInfo,
   SubagentResultDetails,
+  SubagentStatus,
   ToolDisplayItem,
   UsageStats,
 } from './types.ts'
@@ -158,6 +159,65 @@ export function formatToolTarget(
     default:
       return theme.fg('dim', truncateLine(JSON.stringify(args), 120))
   }
+}
+
+export function formatElapsed(startedAt: number, now = Date.now()): string {
+  const totalSeconds = Math.max(0, Math.floor((now - startedAt) / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours) return `${hours}h${minutes}m${seconds}s`
+  if (minutes) return `${minutes}m${seconds}s`
+  return `${seconds}s`
+}
+
+function renderStatusIcon(status: SubagentStatus, theme: Theme): string {
+  switch (status) {
+    case 'done':
+      return theme.fg('success', '✓')
+    case 'failed':
+      return theme.fg('error', '✗')
+    case 'interrupted':
+      return theme.fg('warning', '■')
+    case 'running':
+      return theme.fg('warning', '●')
+    case 'queued':
+      return theme.fg('muted', '○')
+  }
+}
+
+export function renderSubagentWidget(
+  details: SubagentResultDetails,
+  theme: Theme,
+  title: string,
+  jobId: string,
+  startedAt: number,
+  now = Date.now(),
+): string {
+  const doneCount = details.agents.filter(agent => agent.status === 'done').length
+  const runningCount = details.agents.filter(
+    agent => !agent.status || agent.status === 'queued' || agent.status === 'running',
+  ).length
+  const failedCount = details.agents.length - doneCount - runningCount
+  const lines = [
+    [
+      theme.fg('toolTitle', theme.bold(title)),
+      theme.fg('accent', jobId),
+      theme.fg('success', `${doneCount} done`),
+      theme.fg('warning', `${runningCount} running`),
+      theme.fg('error', `${failedCount} failed`),
+      theme.fg('muted', formatElapsed(startedAt, now)),
+    ].join(' · '),
+  ]
+  for (const agent of details.agents) {
+    const status = agent.status || 'queued'
+    const tool = agent.tools?.at(-1)
+    const toolText = tool
+      ? ` · ${theme.fg('muted', getToolDisplayName(tool.name))} ${formatToolTarget(tool.name, tool.args, theme)}`
+      : ''
+    lines.push(`${renderStatusIcon(status, theme)} ${theme.fg('toolTitle', agent.name)}${toolText}`)
+  }
+  return lines.join('\n')
 }
 
 export function renderAgentsOverview(

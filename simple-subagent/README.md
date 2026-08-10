@@ -2,15 +2,17 @@
 
 Pi extension for asynchronous subagents:
 
-- `runSubAgents({ agents: [...] })` dispatches isolated agents and immediately returns a job ID and session keys
+- `runSubAgents({ agents: [...] })` dispatches isolated agents and immediately returns an 8-character job ID and session keys
 - `collectSubagents({ jobId })` waits for results not already delivered
 - `runSubAgentsWithContext({ agents: [...] })` asynchronously forks the parent context; disabled by default
-- `/subagents` lists running jobs; `/subagents cancel <jobId>` cancels one
+- `/subagents` opens a running-job picker with cancellation; `/subagents cancel <jobId>` is the scriptable path
 
 When a job settles, uncollected results are pushed into the parent conversation. Pi queues the
 message as a follow-up while streaming or starts a result-processing turn while idle. Cancelling
 a waiting `collectSubagents` call leaves the job running. Jobs are cancelled on session shutdown,
 `/new`, session switches, and `/subagents cancel`.
+
+The TUI shows a ticking compact widget with job counts and each agent's latest tool call.
 
 When Pi runs inside Herdr, tool subagents run in real Herdr panes instead of hidden child
 processes. They are hidden from Herdr's built-in Agents view and appear in the grouped

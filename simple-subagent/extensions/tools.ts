@@ -1,13 +1,19 @@
-import { randomUUID } from 'node:crypto'
 import { StringEnum } from '@earendil-works/pi-ai'
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { Text } from '@earendil-works/pi-tui'
 import { Type } from 'typebox'
 import type { SimpleSubagentConfig } from './config.ts'
-import { formatResultText, renderAgentsOverview, renderSubagentDetails } from './display.ts'
+import {
+  formatElapsed,
+  formatResultText,
+  renderAgentsOverview,
+  renderSubagentDetails,
+  renderSubagentWidget,
+} from './display.ts'
 import { startJob } from './execute-subagents.ts'
 import { notifyHerdrSubagentsFinished } from './herdr-runner.ts'
 import {
+  createJobId,
   getPushOptions,
   holdPrintModeJobs,
   JobRegistry,
@@ -90,10 +96,6 @@ function createForkFailureResult(
   }
 }
 
-function formatElapsed(startedAt: number): string {
-  return `${Math.max(0, Math.floor((Date.now() - startedAt) / 1000))}s`
-}
-
 export function parseStringifiedAgents<T extends { agents?: unknown }>(args: unknown): T {
   if (
     typeof args === 'object' &&
@@ -139,27 +141,56 @@ export function registerSubagentTools(
 ) {
   const pendingForkJobs: PendingForkJob[] = []
   const jobContexts = new Map<string, ExtensionContext>()
+  const widgetDetails = new Map<string, SubagentResultDetails>()
+  const widgetJobs = new Set<string>()
+  const widgetRenders = new Map<string, () => void>()
   let subagentToolsUnlocked = !isSubagentProcess
   const jobs = new JobRegistry({
     onProgress(job, details) {
       const ctx = jobContexts.get(job.id)
       if (!ctx || ctx.mode !== 'tui') return
-      ctx.ui.setWidget(`simple-subagent-${job.id}`, (_tui, theme) =>
-        new Text(
-          renderSubagentDetails(
-            details,
-            false,
-            theme,
-            job.kind === 'fork' ? 'runSubAgentsWithContext' : 'runSubAgents',
-          ),
-          0,
-          0,
-        ),
-      )
+      widgetDetails.set(job.id, details)
+      if (widgetJobs.has(job.id)) {
+        widgetRenders.get(job.id)?.()
+        return
+      }
+      widgetJobs.add(job.id)
+      ctx.ui.setWidget(`simple-subagent-${job.id}`, (tui, theme) => {
+        const text = new Text('', 0, 0)
+        const timer = setInterval(() => tui.requestRender(), 1000)
+        timer.unref()
+        widgetRenders.set(job.id, () => tui.requestRender())
+        return {
+          render(width) {
+            const latest = widgetDetails.get(job.id)
+            if (!latest) return []
+            text.setText(
+              renderSubagentWidget(
+                latest,
+                theme,
+                job.kind === 'fork' ? 'runSubAgentsWithContext' : 'runSubAgents',
+                job.id,
+                job.startedAt,
+              ),
+            )
+            return text.render(width)
+          },
+          invalidate() {
+            text.invalidate()
+          },
+          dispose() {
+            clearInterval(timer)
+            widgetRenders.delete(job.id)
+          },
+        }
+      })
     },
     onSettled(job, result) {
       const ctx = jobContexts.get(job.id)
       if (ctx?.mode === 'tui') ctx.ui.setWidget(`simple-subagent-${job.id}`, undefined)
+      widgetDetails.delete(job.id)
+      widgetJobs.delete(job.id)
+      widgetRenders.delete(job.id)
       if (result.herdrNotification) {
         const { cwd, doneCount, failedCount } = result.herdrNotification
         void notifyHerdrSubagentsFinished(cwd, doneCount, failedCount)
@@ -199,6 +230,7 @@ export function registerSubagentTools(
     label: 'Run Subagents',
     description: `
         Dispatch isolated subagents and return a job ID plus session keys immediately. Use only when requested. A subagent has no knowledge of the parent context, so provide complete instructions. Use collectSubagents to wait for a job.
+        A job settles only when ALL its agents finish. Batch agents into one call only when you need their results together; dispatch separate calls for independently actionable tasks so each result arrives as soon as it is ready.
         sessionKey: Optional reusable session name. If omitted, a durable name-based key with an 8-character mixed-case alphanumeric suffix is generated and returned. Reuse a key only for follow-up work that benefits from its existing context, and use distinct keys for agents in the same call.
         overrideModel: supply only if requested. ${Object.keys(config.modelAliases).length > 0 ? `options ${Object.keys(config.modelAliases).join(', ')}` : 'use provider/model'}
         thinking: low|medium|high|xhigh|max
@@ -222,7 +254,7 @@ export function registerSubagentTools(
       return new Text(`\n${theme.fg('muted', 'dispatch:')}\n${formatResultText(getMessageText(result.content), theme)}`, 0, 0)
     },
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-      const jobId = randomUUID()
+      const jobId = createJobId(id => !!jobs.get(id))
       jobContexts.set(jobId, ctx)
       try {
         const job = startJob(
@@ -328,6 +360,7 @@ export function registerSubagentTools(
     label: 'Run Subagents With Context',
     description: `
       Fork the parent context into parallel subagents and return a job ID plus session keys immediately. Use only when requested.
+      A job settles only when ALL its agents finish. Batch agents into one call only when you need their results together; dispatch separate calls for independently actionable tasks so each result arrives as soon as it is ready.
       Each child inherits and locks the parent's cwd, provider/model, and thinking level.
       sessionKey: Optional reusable fork name. If omitted, a durable name-based key with an 8-character mixed-case alphanumeric suffix is generated and returned.
     `,
@@ -369,7 +402,7 @@ export function registerSubagentTools(
       if (new Set(agents.map(agent => agent.sessionKey)).size !== agents.length) {
         throw new Error('Duplicate subagent sessionKey for same cwd in one parallel run')
       }
-      const jobId = randomUUID()
+      const jobId = createJobId(id => !!jobs.get(id))
       const details = createScheduledDetails(
         agents,
         ctx,
@@ -425,14 +458,23 @@ export function registerSubagentTools(
           ctx.ui.notify('No running subagent jobs', 'info')
           return
         }
+        const options = running.map(
+          job =>
+            `${job.id} · ${job.agents.map(agent => `${agent.name}:${agent.state}`).join(', ')} · ${formatElapsed(job.startedAt)}`,
+        )
+        const selected = await ctx.ui.select('Running subagent jobs', options)
+        if (!selected) return
+        const job = running[options.indexOf(selected)]
+        if (!job) return
+        const confirmed = await ctx.ui.confirm(
+          `Cancel subagent job ${job.id}?`,
+          job.agents.map(agent => agent.name).join(', '),
+        )
+        if (!confirmed) return
+        const cancelled = jobs.cancel(job.id)
         ctx.ui.notify(
-          running
-            .flatMap(job => [
-              `${job.id} (${formatElapsed(job.startedAt)})`,
-              ...job.agents.map(agent => `${agent.name}: ${agent.state}`),
-            ])
-            .join('\n'),
-          'info',
+          cancelled ? `Cancelled subagent job ${job.id}` : `No running job ${job.id}`,
+          cancelled ? 'info' : 'warning',
         )
         return
       }
@@ -502,6 +544,13 @@ export function registerSubagentTools(
   pi.on('session_shutdown', async () => {
     pendingForkJobs.length = 0
     await jobs.shutdown()
+    for (const jobId of widgetJobs) {
+      const ctx = jobContexts.get(jobId)
+      if (ctx?.mode === 'tui') ctx.ui.setWidget(`simple-subagent-${jobId}`, undefined)
+    }
+    widgetDetails.clear()
+    widgetJobs.clear()
+    widgetRenders.clear()
     jobContexts.clear()
   })
 }
