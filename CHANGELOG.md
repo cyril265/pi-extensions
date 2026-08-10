@@ -2,7 +2,7 @@
 
 All notable changes to this repository are documented here.
 
-## 2026-08-10
+## 2026-08-10 20:55
 
 ### Changed
 
@@ -11,7 +11,7 @@ All notable changes to this repository are documented here.
 - Changed `simple-subagent` result delivery to inline results up to 2048 characters in collect and push messages.
 - Changed `simple-subagent` tool descriptions to advise separate dispatch calls for independently actionable tasks, since a job settles only when all its agents finish.
 
-## 2026-08-10 (earlier)
+## 2026-08-10 20:25
 
 ### Added
 
