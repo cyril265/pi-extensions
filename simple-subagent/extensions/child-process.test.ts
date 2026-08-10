@@ -1,16 +1,17 @@
 import assert from 'node:assert/strict'
 import * as fs from 'node:fs'
+import * as path from 'node:path'
 import test from 'node:test'
+import { getPackageDir } from '@earendil-works/pi-coding-agent'
 import { getPiInvocation } from './child-process.ts'
 
-test('reuses the current Pi entrypoint instead of relying on a platform command shim', () => {
-  const currentScript = process.argv[1]
-  assert.ok(currentScript)
-  assert.equal(fs.existsSync(currentScript), true)
+test('uses the installed Pi CLI entrypoint instead of the SDK host entrypoint', () => {
+  const piCli = path.join(getPackageDir(), 'dist', 'cli.js')
+  assert.equal(fs.existsSync(piCli), true)
 
   const args = ['--mode', 'json']
   assert.deepEqual(getPiInvocation(args), {
     command: process.execPath,
-    args: [currentScript, ...args],
+    args: [piCli, ...args],
   })
 })
