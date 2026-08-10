@@ -229,7 +229,7 @@ export function registerSubagentTools(
     name: 'runSubAgents',
     label: 'Run Subagents',
     description: `
-        Dispatch isolated subagents and return a job ID plus session keys immediately. Use only when requested. A subagent has no knowledge of the parent context, so provide complete instructions. Use collectSubagents to wait for a job.
+        Dispatch isolated subagents and return a job ID plus session keys immediately. A subagent has no knowledge of the parent context, so provide complete instructions. Use collectSubagents to wait for a job.
         A job settles only when ALL its agents finish. Batch agents into one call only when you need their results together; dispatch separate calls for independently actionable tasks so each result arrives as soon as it is ready.
         sessionKey: Optional reusable session name. If omitted, a durable name-based key with an 8-character mixed-case alphanumeric suffix is generated and returned. Reuse a key only for follow-up work that benefits from its existing context, and use distinct keys for agents in the same call.
         overrideModel: ${Object.keys(config.modelAliases).length > 0 ? `options ${Object.keys(config.modelAliases).join(', ')}` : 'use provider/model'}
