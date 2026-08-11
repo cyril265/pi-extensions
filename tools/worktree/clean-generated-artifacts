@@ -2,18 +2,20 @@
 
 import os
 import shutil
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
 
 
-TARGET_NAMES = {"node_modules", "bin", "obj"}
+GIT_IGNORED_TARGET_NAMES = {".angular", "dist"}
+TARGET_NAMES = {"node_modules", "bin", "obj"} | GIT_IGNORED_TARGET_NAMES
 PROJECT_FILE_SUFFIXES = (".csproj", ".fsproj", ".vbproj")
 
 if len(sys.argv) != 2:
     raise SystemExit("usage: clean-generated-artifacts <worktree-root>")
 
-ROOT = Path(sys.argv[1]).expanduser()
+ROOT = Path(sys.argv[1]).expanduser().resolve()
 
 
 def is_dotnet_build_output(bin_dir: Path) -> bool:
@@ -23,6 +25,39 @@ def is_dotnet_build_output(bin_dir: Path) -> bool:
     return (parent / "obj").is_dir() or any(
         entry.suffix in PROJECT_FILE_SUFFIXES for entry in parent.iterdir()
     )
+
+
+def repository_root(directory: Path) -> Path | None:
+    for parent in (directory, *directory.parents):
+        if (parent / ".git").exists():
+            return parent
+        if parent == ROOT:
+            return None
+    return None
+
+
+def is_ignored_untracked_output(directory: Path) -> bool:
+    repository = repository_root(directory)
+    if repository is None:
+        return False
+
+    relative = directory.relative_to(repository)
+    ignored = subprocess.run(
+        ["git", "-C", repository, "check-ignore", "-q", "--", relative],
+        check=False,
+    )
+    if ignored.returncode not in (0, 1):
+        ignored.check_returncode()
+    if ignored.returncode == 1:
+        return False
+
+    tracked = subprocess.run(
+        ["git", "-C", repository, "ls-files", "--", relative],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return not tracked.stdout
 
 
 def find_targets() -> list[Path]:
@@ -36,6 +71,10 @@ def find_targets() -> list[Path]:
             if name not in TARGET_NAMES:
                 continue
             if name == "bin" and not is_dotnet_build_output(parent / name):
+                continue
+            if name in GIT_IGNORED_TARGET_NAMES and not is_ignored_untracked_output(
+                parent / name
+            ):
                 continue
             matched.add(name)
             targets.append(parent / name)
