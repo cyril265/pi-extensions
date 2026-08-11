@@ -44,7 +44,17 @@ import { join } from 'node:path'
 import { getSupportedThinkingLevels, type ModelThinkingLevel } from '@earendil-works/pi-ai'
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { DynamicBorder, getAgentDir } from '@earendil-works/pi-coding-agent'
-import { Container, Key, type SelectItem, SelectList, Text } from '@earendil-works/pi-tui'
+import {
+  type Component,
+  Container,
+  type Focusable,
+  fuzzyFilter,
+  Input,
+  Key,
+  type SelectItem,
+  SelectList,
+  Text,
+} from '@earendil-works/pi-tui'
 
 type ThinkingLevel = ModelThinkingLevel
 const DEFAULT_ACTIVE_TOOLS = ['read', 'bash', 'edit', 'write']
@@ -285,33 +295,56 @@ export default function presetExtension(pi: ExtensionAPI) {
       description: 'Clear active preset',
     })
 
-    const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+    const result = await ctx.ui.custom<string | null>((tui, theme, keybindings, done) => {
       const container = new Container()
       container.addChild(new DynamicBorder(str => theme.fg('accent', str)))
 
       // Header
       container.addChild(new Text(theme.fg('accent', theme.bold('Select Preset'))))
 
-      // SelectList with themed styling
-      const selectList = new SelectList(items, Math.min(items.length, 10), {
-        selectedPrefix: text => theme.fg('accent', text),
-        selectedText: text => theme.fg('accent', text),
-        description: text => theme.fg('muted', text),
-        scrollInfo: text => theme.fg('dim', text),
-        noMatch: text => theme.fg('warning', text),
-      })
+      const searchInput = new Input()
+      container.addChild(searchInput)
 
-      selectList.onSelect = item => done(item.value)
-      selectList.onCancel = () => done(null)
+      const listContainer = new Container()
+      container.addChild(listContainer)
 
-      container.addChild(selectList)
+      let selectList: SelectList
+
+      function updateList(query: string) {
+        const filteredItems = query
+          ? fuzzyFilter(items, query, item => `${item.label} ${item.description ?? ''}`)
+          : items
+
+        selectList = new SelectList(filteredItems, Math.min(filteredItems.length, 10), {
+          selectedPrefix: text => theme.fg('accent', text),
+          selectedText: text => theme.fg('accent', text),
+          description: text => theme.fg('muted', text),
+          scrollInfo: text => theme.fg('dim', text),
+          noMatch: () => theme.fg('warning', '  No matching presets'),
+        })
+        selectList.onSelect = item => done(item.value)
+        selectList.onCancel = () => done(null)
+
+        listContainer.clear()
+        listContainer.addChild(selectList)
+      }
+
+      updateList('')
 
       // Footer hint
-      container.addChild(new Text(theme.fg('dim', '↑↓ navigate • enter select • esc cancel')))
+      container.addChild(
+        new Text(theme.fg('dim', 'type to search • ↑↓ navigate • enter select • esc cancel')),
+      )
 
       container.addChild(new DynamicBorder(str => theme.fg('accent', str)))
 
-      return {
+      const component: Component & Focusable = {
+        get focused() {
+          return searchInput.focused
+        },
+        set focused(value: boolean) {
+          searchInput.focused = value
+        },
         render(width: number) {
           return container.render(width)
         },
@@ -319,10 +352,24 @@ export default function presetExtension(pi: ExtensionAPI) {
           container.invalidate()
         },
         handleInput(data: string) {
-          selectList.handleInput(data)
+          if (
+            keybindings.matches(data, 'tui.select.up') ||
+            keybindings.matches(data, 'tui.select.down') ||
+            keybindings.matches(data, 'tui.select.confirm') ||
+            keybindings.matches(data, 'tui.select.cancel')
+          ) {
+            selectList.handleInput(data)
+          } else {
+            const previousQuery = searchInput.getValue()
+            searchInput.handleInput(data)
+            const query = searchInput.getValue()
+            if (query !== previousQuery) updateList(query)
+          }
           tui.requestRender()
         },
       }
+
+      return component
     })
 
     if (!result) return
