@@ -38,6 +38,12 @@ import type {
 import { formatUsageStats, sumUsageStats } from './usage.ts'
 
 export const INLINE_RESULT_MAX_CHARACTERS = 2048
+const PARENT_ASSIGNED_RUN_INSTRUCTION =
+  'Do not call runSubAgents, collectSubagents, or runSubAgentsWithContext during this run; those tools are unavailable.'
+
+export function getParentAssignedPrompt(prompt: string): string {
+  return `${prompt}${prompt ? '\n\n' : ''}${PARENT_ASSIGNED_RUN_INSTRUCTION}`
+}
 
 type PreparedAgent = SubagentRequest & {
   cwd: string
@@ -120,7 +126,7 @@ export function startJob(
   ctx: ExtensionContext,
 ): SubagentJob {
   if (!subagentToolsUnlocked) {
-    throw new Error('Subagent tools are locked during the parent-assigned run')
+    throw new Error('Subagent tools are unavailable during this run')
   }
   if (requestedAgents.length === 0) throw new Error('No agents')
 
@@ -360,7 +366,10 @@ export function startJob(
             (await getHerdrParentLabel(path.basename(ctx.cwd), ctx.cwd))
           herdrRunStarted = true
           const herdrOutcomes = await runSubagentsInHerdr(
-            preparedAgents,
+            preparedAgents.map(agent => ({
+              ...agent,
+              prompt: getParentAssignedPrompt(agent.prompt),
+            })),
             runDirectory,
             ctx.sessionManager.getSessionId(),
             parentLabel,
@@ -406,7 +415,7 @@ export function startJob(
               const result = await runSubAgent(
                 agent.effectiveModel,
                 agent.thinking,
-                agent.prompt,
+                getParentAssignedPrompt(agent.prompt),
                 agent.cwd,
                 agent.sessionPath,
                 agent.promptCacheKey,

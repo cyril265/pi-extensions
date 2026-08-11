@@ -98,7 +98,7 @@ The projection ends when the server exits or the companion plugin is disabled or
 
 - uses caller model
 - `overrideModel`: optional per-agent model override. Configured aliases resolve through `modelAliases`; `provider/model` selects an explicit model. Unknown bare aliases fail immediately. Runtime details use `suppliedModel` for the provided value and `effectiveModel` for the resolved model.
-- `thinking`: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`
+- `thinking`: `low`, `medium`, `high`, `xhigh`, or `max`
 - `prompt`: prompt sent to child pi process
 - result output includes separate usage lines with turns, token/cache breakdown, and cost (`cache read`/`cache write` stay separate from input tokens)
 - results of 2048 characters or fewer are inlined alongside the result path
@@ -114,10 +114,12 @@ area, alternating right/down as their shape changes so larger runs stay usable. 
 panes remain available for review, and Herdr emits one `Subagents finished` notification with
 done/failed counts when the run settles.
 
-During its parent-assigned run, a subagent cannot call `runSubAgents` or
+During its parent-assigned run, a subagent cannot call `runSubAgents`, `collectSubagents`, or
 `runSubAgentsWithContext`. Once that run settles, those tools become available in the retained
-Herdr pane for normal interactive continuation. Reusing a session key starts the next
-parent-assigned run locked again without changing session reuse behavior.
+Herdr pane for normal interactive continuation. Their schemas remain active while execution is
+locked so the provider prompt-cache prefix does not change at settlement; the assigned prompt
+instructs the agent not to call them. Reusing a session key starts the next parent-assigned run
+locked again without changing session reuse behavior.
 
 If Herdr setup fails before any subagent pane starts (projection setup, pane discovery, or tab
 creation), the tool falls back to child-process mode and includes the Herdr reason as a warning.

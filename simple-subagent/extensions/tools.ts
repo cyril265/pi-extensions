@@ -25,16 +25,6 @@ import { resolveSubagentSessionKey } from './sessions.ts'
 import type { SubagentRequest, SubagentResultDetails, ThinkingLevel } from './types.ts'
 
 const SIMPLE_SUBAGENT_FORK_TOOL_ENV = 'PI_SIMPLE_SUBAGENT_FORK_TOOL'
-const SUBAGENT_TOOL_NAMES = new Set([
-  'runSubAgents',
-  'collectSubagents',
-  'runSubAgentsWithContext',
-])
-type SubagentToolActivationApi = {
-  getActiveTools(): string[]
-  getAllTools(): Array<{ name: string }>
-  setActiveTools(names: string[]): void
-}
 type PendingForkJob = {
   jobId: string
   toolCallId: string
@@ -113,25 +103,6 @@ export function shouldLockSubagentTools(
   sessionStartReason: 'startup' | 'reload' | 'new' | 'resume' | 'fork',
 ): boolean {
   return isSubagentProcess && sessionStartReason === 'startup'
-}
-
-export function setSubagentToolsActive(
-  pi: SubagentToolActivationApi,
-  active: boolean,
-): void {
-  const current = pi.getActiveTools()
-  const next = active
-    ? [
-        ...new Set([
-          ...current,
-          ...pi
-            .getAllTools()
-            .map(tool => tool.name)
-            .filter(name => SUBAGENT_TOOL_NAMES.has(name)),
-        ]),
-      ]
-    : current.filter(name => !SUBAGENT_TOOL_NAMES.has(name))
-  pi.setActiveTools(next)
 }
 
 export function registerSubagentTools(
@@ -229,7 +200,7 @@ export function registerSubagentTools(
     name: 'runSubAgents',
     label: 'Run Subagents',
     description: `
-        Dispatch isolated subagents and return a job ID plus session keys immediately. A subagent has no knowledge of the parent context, so provide complete instructions. Use collectSubagents to wait for a job.
+        Dispatch isolated subagents and return a job ID plus session keys immediately. A subagent has no knowledge of the parent context, so provide complete instructions. Continue independent work after dispatch. Call collectSubagents only when you need to block; otherwise results are delivered automatically.
         A job settles only when ALL its agents finish. Batch agents into one call only when you need their results together; dispatch separate calls for independently actionable tasks so each result arrives as soon as it is ready.
         sessionKey: Optional reusable session name. If omitted, a durable name-based key with an 8-character mixed-case alphanumeric suffix is generated and returned. Reuse a key only for follow-up work that benefits from its existing context, and use distinct keys for agents in the same call.
         overrideModel: ${Object.keys(config.modelAliases).length > 0 ? `options ${Object.keys(config.modelAliases).join(', ')}` : 'use provider/model'}
@@ -316,6 +287,9 @@ export function registerSubagentTools(
       return new Text(formatResultText(getMessageText(result.content), theme), 0, 0)
     },
     async execute(_toolCallId, params, signal) {
+      if (!subagentToolsUnlocked) {
+        throw new Error('Subagent tools are unavailable during this run')
+      }
       const result = await jobs.collect(params.jobId, signal)
       if (!result) {
         return {
@@ -390,7 +364,7 @@ export function registerSubagentTools(
     },
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {
       if (!subagentToolsUnlocked) {
-        throw new Error('Subagent tools are locked during the parent-assigned run')
+        throw new Error('Subagent tools are unavailable during this run')
       }
       if (params.agents.length === 0) throw new Error('No agents')
       if (!ctx.model) throw new Error('Parent context has no caller model')
@@ -502,13 +476,11 @@ export function registerSubagentTools(
 
     if (!isSubagentProcess) return
     subagentToolsUnlocked = !shouldLockSubagentTools(isSubagentProcess, event.reason)
-    setSubagentToolsActive(pi, subagentToolsUnlocked)
   })
 
   pi.on('agent_settled', () => {
     if (!isSubagentProcess || subagentToolsUnlocked) return
     subagentToolsUnlocked = true
-    setSubagentToolsActive(pi, true)
   })
 
   pi.on('turn_end', async (_event, ctx) => {

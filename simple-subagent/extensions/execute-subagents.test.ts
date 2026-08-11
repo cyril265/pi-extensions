@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   formatFinishedAgentResult,
+  getParentAssignedPrompt,
   INLINE_RESULT_MAX_CHARACTERS,
 } from './execute-subagents.ts'
 import type { SubagentRunResult } from './types.ts'
@@ -34,6 +35,13 @@ function result(text: string): SubagentRunResult {
     },
   }
 }
+
+test('tells assigned agents not to call locked subagent tools', () => {
+  assert.equal(
+    getParentAssignedPrompt('Review the change.'),
+    'Review the change.\n\nDo not call runSubAgents, collectSubagents, or runSubAgentsWithContext during this run; those tools are unavailable.',
+  )
+})
 
 test('inlines finished agent results at the character threshold', () => {
   const text = 'x'.repeat(INLINE_RESULT_MAX_CHARACTERS)

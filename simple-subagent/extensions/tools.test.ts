@@ -4,7 +4,6 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import {
   parseStringifiedAgents,
   registerSubagentTools,
-  setSubagentToolsActive,
   shouldLockSubagentTools,
 } from './tools.ts'
 
@@ -57,31 +56,45 @@ test('locks subagent tools only for managed process startup', () => {
   assert.equal(shouldLockSubagentTools(false, 'startup'), false)
 })
 
-test('removes and restores registered subagent tools without changing other tools', () => {
-  let activeTools = ['read', 'runSubAgents', 'collectSubagents', 'runSubAgentsWithContext']
-  const pi = {
-    getActiveTools: () => activeTools,
-    getAllTools: () => [
-      { name: 'read' },
-      { name: 'runSubAgents' },
-      { name: 'collectSubagents' },
-      { name: 'runSubAgentsWithContext' },
-    ],
-    setActiveTools: (names: string[]) => {
-      activeTools = names
-    },
+test('keeps tool schemas active while locking their execution during the assigned run', async () => {
+  type TestTool = {
+    name: string
+    execute: (
+      toolCallId: string,
+      params: { jobId: string },
+      signal: AbortSignal | undefined,
+    ) => Promise<unknown>
   }
+  const tools: TestTool[] = []
+  const handlers = new Map<string, (...args: unknown[]) => unknown>()
+  let activeToolChanges = 0
+  const pi = {
+    registerTool: (tool: unknown) => tools.push(tool as TestTool),
+    registerMessageRenderer: () => {},
+    registerCommand: () => {},
+    on: (event: string, handler: unknown) =>
+      handlers.set(event, handler as (...args: unknown[]) => unknown),
+    setActiveTools: () => {
+      activeToolChanges += 1
+    },
+  } as unknown as ExtensionAPI
 
-  setSubagentToolsActive(pi, false)
-  assert.deepEqual(activeTools, ['read'])
+  registerSubagentTools(pi, true, { enableForkTool: false, modelAliases: {} })
+  handlers.get('session_start')?.({ reason: 'startup' }, {})
 
-  setSubagentToolsActive(pi, true)
-  assert.deepEqual(activeTools, [
-    'read',
-    'runSubAgents',
-    'collectSubagents',
-    'runSubAgentsWithContext',
-  ])
+  const collectTool = tools.find(tool => tool.name === 'collectSubagents')
+  assert.ok(collectTool)
+  await assert.rejects(
+    collectTool.execute('collect-call', { jobId: 'missing' }, undefined),
+    /Subagent tools are unavailable during this run/,
+  )
+
+  handlers.get('agent_settled')?.()
+  await assert.rejects(
+    collectTool.execute('collect-call', { jobId: 'missing' }, undefined),
+    /Unknown subagent job: missing/,
+  )
+  assert.equal(activeToolChanges, 0)
 })
 
 test('pushes a fork spawn failure from turn_end as a follow-up', async () => {
