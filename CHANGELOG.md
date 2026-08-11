@@ -2,6 +2,18 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-08-11 17:34
+
+### Added
+
+- Added fuzzy search to the `presets` picker.
+
+### Changed
+
+- Changed `simple-subagent` to keep subagent tool schemas registered during a parent-assigned run and lock execution at runtime instead, so the provider prompt-cache prefix stays stable; assigned prompts now tell agents the tools are unavailable.
+- Changed the `runSubAgents` description to advise continuing independent work after dispatch and calling `collectSubagents` only to block.
+- Changed `clean-generated-artifacts` to also remove `.angular` and `dist` directories when they are git-ignored and untracked.
+
 ## 2026-08-10 20:55
 
 ### Changed
