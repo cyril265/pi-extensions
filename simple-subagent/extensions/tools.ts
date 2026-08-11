@@ -170,16 +170,19 @@ export function registerSubagentTools(
     onPush(job, result) {
       const ctx = jobContexts.get(job.id)
       if (!ctx) throw new Error(`Missing context for subagent job ${job.id}`)
+      const isIdle = ctx.isIdle()
       pi.sendMessage(
         {
           customType: 'forked-subagent-results',
-          content: `Subagent job ${job.id} finished:\n\n${result.text}`,
+          content: isIdle
+            ? `Subagent job ${job.id} finished:\n\n${result.text}`
+            : `Subagent job ${job.id} finished.\nContinue your current work and use these findings where relevant.\n\n${result.text}`,
           display: true,
           details: {
             jobs: [{ jobId: job.id, kind: job.kind, result }],
           } satisfies ForkedSubagentResultsDetails,
         },
-        getPushOptions(ctx.isIdle()),
+        getPushOptions(isIdle),
       )
     },
   })

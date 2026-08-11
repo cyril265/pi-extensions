@@ -72,7 +72,7 @@ test('settles into one waiting collector and never delivers the same result twic
   assert.equal(await jobs.collect(job.id, undefined), undefined)
 })
 
-test('pushes settled results once and routes streaming and idle delivery differently', async () => {
+test('pushes settled results once and steers a running agent', async () => {
   const pushed: string[] = []
   const jobs = new JobRegistry({
     onPush: (_job, jobResult) => pushed.push(jobResult.text),
@@ -89,7 +89,7 @@ test('pushes settled results once and routes streaming and idle delivery differe
 
   assert.deepEqual(pushed, ['pushed'])
   assert.equal(await jobs.collect(job.id, undefined), undefined)
-  assert.deepEqual(getPushOptions(false), { deliverAs: 'followUp' })
+  assert.deepEqual(getPushOptions(false), { deliverAs: 'steer' })
   assert.deepEqual(getPushOptions(true), { triggerTurn: true })
 })
 

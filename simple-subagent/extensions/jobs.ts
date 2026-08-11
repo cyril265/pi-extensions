@@ -262,8 +262,8 @@ export class JobRegistry {
 
 export function getPushOptions(
   isIdle: boolean,
-): { deliverAs: 'followUp' } | { triggerTurn: true } {
-  return isIdle ? { triggerTurn: true } : { deliverAs: 'followUp' }
+): { deliverAs: 'steer' } | { triggerTurn: true } {
+  return isIdle ? { triggerTurn: true } : { deliverAs: 'steer' }
 }
 
 export async function holdPrintModeJobs(

@@ -8,7 +8,7 @@ Pi extension for asynchronous subagents:
 - `/subagents` opens a running-job picker with cancellation; `/subagents cancel <jobId>` is the scriptable path
 
 When a job settles, uncollected results are pushed into the parent conversation. Pi queues the
-message as a follow-up while streaming or starts a result-processing turn while idle. Cancelling
+message as steering while streaming or starts a result-processing turn while idle. Cancelling
 a waiting `collectSubagents` call leaves the job running. Jobs are cancelled on session shutdown,
 `/new`, session switches, and `/subagents cancel`.
 

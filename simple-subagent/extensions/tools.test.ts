@@ -97,7 +97,7 @@ test('keeps tool schemas active while locking their execution during the assigne
   assert.equal(activeToolChanges, 0)
 })
 
-test('pushes a fork spawn failure from turn_end as a follow-up', async () => {
+test('pushes a fork spawn failure from turn_end as steering', async () => {
   const tools: Array<{
     name: string
     execute: (...args: any[]) => Promise<{ content: Array<{ type: string; text: string }> }>
@@ -143,7 +143,7 @@ test('pushes a fork spawn failure from turn_end as a follow-up', async () => {
   assert.equal(sent[0].message.customType, 'forked-subagent-results')
   assert.match(
     sent[0].message.content,
-    /Forked subagents failed: Parent context can only be forked from a persisted session/,
+    /Continue your current work and use these findings where relevant\.\n\nForked subagents failed: Parent context can only be forked from a persisted session/,
   )
-  assert.deepEqual(sent[0].options, { deliverAs: 'followUp' })
+  assert.deepEqual(sent[0].options, { deliverAs: 'steer' })
 })

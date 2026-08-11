@@ -2,6 +2,17 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-08-11 18:12
+
+### simple-subagent
+
+- Changed completed job results to steer a busy parent before its next model call instead of waiting for all parent tool work to finish.
+- Added soft guidance for a busy parent to continue its current work and use delivered subagent findings where relevant.
+
+### General
+
+- Added repository guidance requiring changelog updates before commits and grouping entries by extension.
+
 ## 2026-08-11 17:34
 
 ### Added
