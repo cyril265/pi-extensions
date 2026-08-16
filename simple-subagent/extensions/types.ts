@@ -87,5 +87,6 @@ export type SubagentRunResult = {
   exitCode: number
   tools: ToolDisplayItem[]
   usage: UsageStats
+  contextTokens?: number
   firstTurnUsage: FirstTurnUsage
 }

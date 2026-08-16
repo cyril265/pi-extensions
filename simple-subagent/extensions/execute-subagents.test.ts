@@ -27,6 +27,7 @@ function result(text: string): SubagentRunResult {
       cost: 0,
       turns: 1,
     },
+    contextTokens: 42_000,
     firstTurnUsage: {
       input: 10,
       output: 5,
@@ -50,7 +51,7 @@ test('inlines finished agent results at the character threshold', () => {
   assert.deepEqual(lines.slice(0, 3), [
     'reviewer (medium, test/model, exit 0): /tmp/reviewer-result.md',
     'sessionKey: reviewer-key',
-    '1 turn, 15 tokens (input 10, output 5), cost $0.0000',
+    'final context: 42k',
   ])
   assert.deepEqual(lines.slice(3), ['', 'reviewer result:', `    ${text}`])
 })
@@ -63,7 +64,7 @@ test('keeps larger finished agent results path-only', () => {
     [
       'reviewer (medium, test/model, exit 0): /tmp/reviewer-result.md',
       'sessionKey: reviewer-key',
-      '1 turn, 15 tokens (input 10, output 5), cost $0.0000',
+      'final context: 42k',
     ],
   )
 })

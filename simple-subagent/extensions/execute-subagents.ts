@@ -3,6 +3,7 @@ import * as path from 'node:path'
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { runSubAgent } from './child-process.ts'
 import {
+  formatSubagentTabLabel,
   getHerdrParentLabel,
   HerdrInitializationError,
   isHerdrEnvironment,
@@ -35,7 +36,7 @@ import type {
   ThinkingLevel,
   ToolDisplayItem,
 } from './types.ts'
-import { formatUsageStats, sumUsageStats } from './usage.ts'
+import { formatTokenCount } from './usage.ts'
 
 export const INLINE_RESULT_MAX_CHARACTERS = 2048
 const PARENT_ASSIGNED_RUN_INSTRUCTION =
@@ -98,8 +99,10 @@ export function formatFinishedAgentResult(
   const lines = [
     `${agent.name} (${agent.thinking}, ${agent.effectiveModel}, exit ${result.exitCode}): ${outputPath}`,
     `sessionKey: ${agent.sessionKey}`,
-    formatUsageStats(result.usage),
   ]
+  if (result.contextTokens !== undefined) {
+    lines.push(`final context: ${formatTokenCount(result.contextTokens)}`)
+  }
   if (hasParentPromptCache) {
     const firstTurn = result.firstTurnUsage
     lines.push(
@@ -476,14 +479,9 @@ export function startJob(
           !!(agent.forkParent && preparedAgents[index].promptCacheKey),
         )
       })
-      if (sortedResults.length > 1) {
-        lines.push(
-          `Total: ${formatUsageStats(sumUsageStats(sortedResults.map(({ result }) => result.usage)))}`,
-        )
-      }
       if (herdrParentLabel) {
         lines.push(
-          `Panes: tab "subagents · ${herdrParentLabel}" in Herdr`,
+          `Panes: tab "${formatSubagentTabLabel(herdrParentLabel)}" in Herdr`,
           "Review: run 'herdr plugin pane open --plugin local.simple-subagent --entrypoint subagents --placement overlay --focus' or press your bound key",
         )
       }

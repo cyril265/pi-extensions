@@ -2,6 +2,14 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-08-16 17:00
+
+### simple-subagent
+
+- Redesigned dispatch, progress, and result displays with clearer statuses, model labels, session keys, and compact per-agent usage in the TUI.
+- Shortened Herdr subagent tab labels to `SU: <parent>`.
+- Replaced aggregate usage and cost in parent-delivered results with the subagent's final context size.
+
 ## 2026-08-11 18:12
 
 ### simple-subagent

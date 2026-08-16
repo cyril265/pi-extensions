@@ -5,6 +5,7 @@ import { Type } from 'typebox'
 import type { SimpleSubagentConfig } from './config.ts'
 import {
   formatElapsed,
+  renderDispatchResult,
   formatResultText,
   renderAgentsOverview,
   renderSubagentDetails,
@@ -37,6 +38,10 @@ type DeliveredSubagentJob = {
 }
 type ForkedSubagentResultsDetails = {
   jobs: DeliveredSubagentJob[]
+}
+type SubagentDispatchDetails = {
+  jobId: string
+  agents: Array<{ name: string; sessionKey: string }>
 }
 
 function getMessageText(content: string | Array<{ type: string; text?: string }>): string {
@@ -199,7 +204,10 @@ export function registerSubagentTools(
       }),
     ),
   })
-  const runSubAgentsTool: ToolDefinition<typeof runSubAgentsParameters, undefined> = {
+  const runSubAgentsTool: ToolDefinition<
+    typeof runSubAgentsParameters,
+    SubagentDispatchDetails
+  > = {
     name: 'runSubAgents',
     label: 'Run Subagents',
     description: `
@@ -225,7 +233,13 @@ export function registerSubagentTools(
       )
     },
     renderResult(result, _options, theme) {
-      return new Text(`\n${theme.fg('muted', 'dispatch:')}\n${formatResultText(getMessageText(result.content), theme)}`, 0, 0)
+      return new Text(
+        result.details
+          ? renderDispatchResult(result.details.jobId, result.details.agents, theme)
+          : formatResultText(getMessageText(result.content), theme),
+        0,
+        0,
+      )
     },
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {
       const jobId = createJobId(id => !!jobs.get(id))
@@ -253,7 +267,13 @@ export function registerSubagentTools(
               ].join('\n'),
             },
           ],
-          details: undefined,
+          details: {
+            jobId: job.id,
+            agents: job.agents.map(agent => ({
+              name: agent.name,
+              sessionKey: agent.sessionKey,
+            })),
+          },
         }
       } catch (error) {
         jobContexts.delete(jobId)
@@ -330,7 +350,7 @@ export function registerSubagentTools(
   })
   const runSubAgentsWithContextTool: ToolDefinition<
     typeof runSubAgentsWithContextParameters,
-    undefined
+    SubagentDispatchDetails
   > = {
     ...runSubAgentsTool,
     name: 'runSubAgentsWithContext',
@@ -360,7 +380,9 @@ export function registerSubagentTools(
     },
     renderResult(result, _options, theme) {
       return new Text(
-        `\n${theme.fg('muted', 'dispatch:')}\n${formatResultText(getMessageText(result.content), theme)}`,
+        result.details
+          ? renderDispatchResult(result.details.jobId, result.details.agents, theme)
+          : formatResultText(getMessageText(result.content), theme),
         0,
         0,
       )
@@ -404,7 +426,13 @@ export function registerSubagentTools(
             ].join('\n'),
           },
         ],
-        details: undefined,
+        details: {
+          jobId,
+          agents: agents.map(agent => ({
+            name: agent.name,
+            sessionKey: agent.sessionKey,
+          })),
+        },
         terminate: true,
       }
     },

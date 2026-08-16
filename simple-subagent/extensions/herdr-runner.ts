@@ -99,6 +99,10 @@ export function partitionParentRecords(
   return { finished, reusable }
 }
 
+export function formatSubagentTabLabel(parentLabel: string): string {
+  return `SU: ${parentLabel.slice(0, 10).trimEnd()}`
+}
+
 class HerdrCommandError extends Error {
   readonly code: string | undefined
 
@@ -529,7 +533,7 @@ export async function runSubagentsInHerdr(
       rootPaneId = ''
       reuseSplitPaneId = reusable.paneId
       await runHerdr(
-        ['tab', 'rename', tabId, `subagents · ${parentLabel}`],
+        ['tab', 'rename', tabId, formatSubagentTabLabel(parentLabel)],
         firstAgent.cwd,
         false,
       ).catch(() => {})
@@ -543,7 +547,7 @@ export async function runSubagentsInHerdr(
           '--cwd',
           agents[0].cwd,
           '--label',
-          `subagents · ${parentLabel}`,
+          formatSubagentTabLabel(parentLabel),
           '--no-focus',
           ...getChildEnvironmentArguments(firstAgent),
         ],

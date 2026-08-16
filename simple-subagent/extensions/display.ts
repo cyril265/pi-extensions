@@ -8,7 +8,7 @@ import type {
   ToolDisplayItem,
   UsageStats,
 } from './types.ts'
-import { formatUsageStats, sumUsageStats } from './usage.ts'
+import { formatCompactUsageStats, sumUsageStats } from './usage.ts'
 
 function truncate(text: string, max = 80): string {
   return text.length > max ? `${text.slice(0, max - 3)}...` : text
@@ -21,35 +21,6 @@ function truncateLine(text: string, max = 80): string {
 function getCwdLabel(cwd: string): string {
   const name = path.basename(cwd)
   return name || cwd
-}
-
-function getAgentsWithUsage(
-  agents: AgentDisplayInfo[],
-): Array<AgentDisplayInfo & { usage: UsageStats }> {
-  return agents.filter((agent): agent is AgentDisplayInfo & { usage: UsageStats } => !!agent.usage)
-}
-
-function formatAgentStatsLines(agents: AgentDisplayInfo[], theme: Theme): string[] {
-  const agentsWithUsage = getAgentsWithUsage(agents)
-  if (agentsWithUsage.length === 0) return []
-
-  if (agentsWithUsage.length === 1) {
-    return [theme.fg('toolOutput', formatUsageStats(agentsWithUsage[0].usage))]
-  }
-
-  const lines: string[] = []
-  for (const agent of agentsWithUsage) {
-    lines.push(
-      `${theme.fg('toolTitle', agent.name)} ${theme.fg('toolOutput', formatUsageStats(agent.usage))}`,
-    )
-  }
-  lines.push(
-    theme.fg(
-      'toolOutput',
-      `total ${formatUsageStats(sumUsageStats(agentsWithUsage.map(agent => agent.usage)))}`,
-    ),
-  )
-  return lines
 }
 
 export function formatResultText(text: string, theme: Theme): string {
@@ -186,6 +157,43 @@ function renderStatusIcon(status: SubagentStatus, theme: Theme): string {
   }
 }
 
+function renderAgentIdentity(agent: AgentDisplayInfo, theme: Theme): string {
+  const model = agent.suppliedModel ?? agent.effectiveModel?.split('/').at(-1)
+  const modelLabel = model
+    ? `${theme.fg('muted', ' · ')}${theme.fg('accent', model)}`
+    : ''
+  return `${theme.fg('text', agent.name)}${modelLabel}`
+}
+
+function renderStatusSummary(agents: AgentDisplayInfo[], theme: Theme): string {
+  const doneCount = agents.filter(agent => agent.status === 'done').length
+  const failedCount = agents.filter(agent => agent.status === 'failed').length
+  const interruptedCount = agents.filter(agent => agent.status === 'interrupted').length
+  const runningCount = agents.length - doneCount - failedCount - interruptedCount
+
+  if (doneCount === agents.length) return theme.fg('success', `${doneCount}/${agents.length} done`)
+
+  const parts: string[] = []
+  if (doneCount) parts.push(theme.fg('success', `${doneCount} done`))
+  if (runningCount) parts.push(theme.fg('warning', `${runningCount} running`))
+  if (failedCount) parts.push(theme.fg('error', `${failedCount} failed`))
+  if (interruptedCount) parts.push(theme.fg('warning', `${interruptedCount} interrupted`))
+  return parts.join(theme.fg('muted', ' · '))
+}
+
+export function renderDispatchResult(
+  jobId: string,
+  agents: Array<{ name: string; sessionKey: string }>,
+  theme: Theme,
+): string {
+  const count = `${agents.length} agent${agents.length === 1 ? '' : 's'}`
+  return [
+    `${theme.fg('success', 'dispatched')}${theme.fg('dim', ' · job ')}${theme.fg('accent', jobId)}${theme.fg('dim', ` · ${count}`)}`,
+    ...agents.map(agent => theme.fg('dim', `${agent.name} → ${agent.sessionKey}`)),
+    theme.fg('dim', `collect with collectSubagents({ jobId: "${jobId}" })`),
+  ].join('\n')
+}
+
 export function renderSubagentWidget(
   details: SubagentResultDetails,
   theme: Theme,
@@ -194,18 +202,11 @@ export function renderSubagentWidget(
   startedAt: number,
   now = Date.now(),
 ): string {
-  const doneCount = details.agents.filter(agent => agent.status === 'done').length
-  const runningCount = details.agents.filter(
-    agent => !agent.status || agent.status === 'queued' || agent.status === 'running',
-  ).length
-  const failedCount = details.agents.length - doneCount - runningCount
   const lines = [
     [
       theme.fg('toolTitle', theme.bold(title)),
-      theme.fg('accent', jobId),
-      theme.fg('success', `${doneCount} done`),
-      theme.fg('warning', `${runningCount} running`),
-      theme.fg('error', `${failedCount} failed`),
+      `${theme.fg('dim', 'job')} ${theme.fg('accent', jobId)}`,
+      renderStatusSummary(details.agents, theme),
       theme.fg('muted', formatElapsed(startedAt, now)),
     ].join(' · '),
   ]
@@ -215,7 +216,7 @@ export function renderSubagentWidget(
     const toolText = tool
       ? ` · ${theme.fg('muted', getToolDisplayName(tool.name))} ${formatToolTarget(tool.name, tool.args, theme)}`
       : ''
-    lines.push(`${renderStatusIcon(status, theme)} ${theme.fg('toolTitle', agent.name)}${toolText}`)
+    lines.push(`${renderStatusIcon(status, theme)} ${renderAgentIdentity(agent, theme)}${toolText}`)
   }
   return lines.join('\n')
 }
@@ -226,16 +227,9 @@ export function renderAgentsOverview(
   showRuntime = false,
   title = 'runSubAgents',
 ): string {
-  const doneCount = agents.filter(agent => agent.status === 'done').length
-  const runningCount = agents.filter(agent => agent.status === 'running').length
-  const failedCount = agents.filter(agent => agent.status === 'failed').length
-  const interruptedCount = agents.filter(agent => agent.status === 'interrupted').length
-  let header = `${theme.fg('toolTitle', theme.bold(title))} ${theme.fg('accent', `${agents.length} agent${agents.length === 1 ? '' : 's'}`)}`
+  let header = `${theme.fg('toolTitle', theme.bold(title))}${theme.fg('muted', ` · ${agents.length} agent${agents.length === 1 ? '' : 's'}`)}`
   if (showRuntime) {
-    if (doneCount > 0) header += ` ${theme.fg('success', `${doneCount} done`)}`
-    if (runningCount > 0) header += ` ${theme.fg('warning', `${runningCount} running`)}`
-    if (failedCount > 0) header += ` ${theme.fg('error', `${failedCount} failed`)}`
-    if (interruptedCount > 0) header += ` ${theme.fg('warning', `${interruptedCount} interrupted`)}`
+    header += `${theme.fg('muted', ' · ')}${renderStatusSummary(agents, theme)}`
   }
 
   const lines = [header]
@@ -255,15 +249,14 @@ export function renderAgentsOverview(
     const session = agent.sessionKey ? `session:${agent.sessionKey}` : 'new session'
     const context = agent.forkParent ? ' · parent fork' : ''
     const meta = showRuntime ? `${status} · ${session}${context}` : `${session}${context}`
-    const displayModel = agent.effectiveModel ?? agent.suppliedModel
     lines.push(
       '',
-      `${theme.fg('muted', `${index + 1}.`)} ${icon}${theme.fg('toolTitle', theme.bold(agent.name))} ${theme.fg('warning', `[${agent.thinking}]`)}${displayModel ? ` ${theme.fg('dim', `[${displayModel}]`)}` : ''} ${theme.fg('muted', meta)}`,
+      `${theme.fg('dim', `${index + 1}.`)} ${icon}${renderAgentIdentity(agent, theme)}${theme.fg('dim', ` · ${agent.thinking} · ${meta}`)}`,
     )
     if (agent.cwd)
-      lines.push(`   ${theme.fg('muted', 'cwd')} ${theme.fg('accent', getCwdLabel(agent.cwd))}`)
+      lines.push(`   ${theme.fg('dim', 'cwd')} ${theme.fg('text', getCwdLabel(agent.cwd))}`)
     if (agent.prompt) {
-      lines.push(`   ${theme.fg('muted', 'task')}`)
+      lines.push(`   ${theme.fg('dim', 'task')}`)
       for (const line of wrapPreview(agent.prompt, 110, 3)) {
         lines.push(`     ${theme.fg('toolOutput', line)}`)
       }
@@ -277,15 +270,7 @@ export function renderLiveCompact(
   theme: Theme,
   title = 'runSubAgents',
 ): string {
-  const doneCount = agents.filter(agent => agent.status === 'done').length
-  const runningCount = agents.filter(agent => agent.status === 'running').length
-  const failedCount = agents.filter(agent => agent.status === 'failed').length
-  const interruptedCount = agents.filter(agent => agent.status === 'interrupted').length
-  let text = `${theme.fg('toolTitle', theme.bold(title))} ${theme.fg('accent', `${agents.length} agent${agents.length === 1 ? '' : 's'}`)}`
-  if (doneCount) text += ` ${theme.fg('success', `${doneCount} done`)}`
-  if (runningCount) text += ` ${theme.fg('warning', `${runningCount} running`)}`
-  if (failedCount) text += ` ${theme.fg('error', `${failedCount} failed`)}`
-  if (interruptedCount) text += ` ${theme.fg('warning', `${interruptedCount} interrupted`)}`
+  let text = `${theme.fg('toolTitle', theme.bold(title))}${theme.fg('muted', ' · ')}${renderStatusSummary(agents, theme)}`
   text += `\n${agents
     .map(agent => {
       const status = agent.status || 'queued'
@@ -299,11 +284,18 @@ export function renderLiveCompact(
               : status === 'running'
                 ? theme.fg('warning', '●')
                 : theme.fg('muted', '○')
-      return `${prefix} ${theme.fg('toolTitle', agent.name)}`
+      const usage = agent.usage
+        ? `${theme.fg('muted', ' · ')}${theme.fg('dim', formatCompactUsageStats(agent.usage))}`
+        : ''
+      return `${prefix} ${renderAgentIdentity(agent, theme)}${usage}`
     })
-    .join(' ')}`
-  const statsLines = formatAgentStatsLines(agents, theme)
-  if (statsLines.length) text += `\n${statsLines.join('\n')}`
+    .join('\n')}`
+  const agentsWithUsage = agents.filter(
+    (agent): agent is AgentDisplayInfo & { usage: UsageStats } => !!agent.usage,
+  )
+  if (agentsWithUsage.length > 1) {
+    text += `\n${theme.fg('dim', `total · ${formatCompactUsageStats(sumUsageStats(agentsWithUsage.map(agent => agent.usage)))}`)}`
+  }
   return text
 }
 
@@ -347,7 +339,7 @@ export function renderSubagentDetails(
     if (event.agent !== previousAgent) {
       flushToolGroup()
       if (previousAgent) lines.push('')
-      lines.push(theme.fg('toolTitle', theme.bold(event.agent)))
+      lines.push(theme.fg('text', event.agent))
       previousAgent = event.agent
     }
     if (toolGroup && toolGroup.agent === event.agent && toolGroup.name === event.tool.name) {

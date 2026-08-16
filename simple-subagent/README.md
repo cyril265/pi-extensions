@@ -100,7 +100,7 @@ The projection ends when the server exits or the companion plugin is disabled or
 - `overrideModel`: optional per-agent model override. Configured aliases resolve through `modelAliases`; `provider/model` selects an explicit model. Unknown bare aliases fail immediately. Runtime details use `suppliedModel` for the provided value and `effectiveModel` for the resolved model.
 - `thinking`: `low`, `medium`, `high`, `xhigh`, or `max`
 - `prompt`: prompt sent to child pi process
-- result output includes separate usage lines with turns, token/cache breakdown, and cost (`cache read`/`cache write` stay separate from input tokens)
+- result output reports the final context used without exposing aggregate usage or cost
 - results of 2048 characters or fewer are inlined alongside the result path
 - `cwd`: working directory for child pi run
 

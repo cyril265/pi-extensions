@@ -9,7 +9,7 @@ import {
   getToolDisplayItems,
 } from './tool-events.ts'
 import type { PiJsonEvent, SubagentRunResult, ThinkingLevel, ToolDisplayItem } from './types.ts'
-import { addAssistantUsage, createUsageStats } from './usage.ts'
+import { addAssistantUsage, createUsageStats, getAssistantContextTokens } from './usage.ts'
 
 const SIMPLE_SUBAGENT_PROCESS_ENV = 'PI_SIMPLE_SUBAGENT'
 const SIMPLE_SUBAGENT_CACHE_KEY_ENV = 'PI_SIMPLE_SUBAGENT_CACHE_KEY'
@@ -117,6 +117,7 @@ export async function runSubAgent(
 ): Promise<SubagentRunResult> {
   const usage = createUsageStats()
   let firstTurnUsage: SubagentRunResult['firstTurnUsage'] | undefined
+  let contextTokens: number | undefined
   const messages: Message[] = []
   const tools: ToolDisplayItem[] = []
   const args = [
@@ -154,6 +155,7 @@ export async function runSubAgent(
           cacheWrite: message.usage.cacheWrite,
         }
       }
+      contextTokens = getAssistantContextTokens(message) ?? contextTokens
       addAssistantUsage(usage, message)
     },
     promptCacheKey
@@ -178,6 +180,7 @@ export async function runSubAgent(
     exitCode: result.exitCode,
     tools: dedupeToolDisplayItems([...tools, ...getToolDisplayItems(messages)]),
     usage,
+    contextTokens,
     firstTurnUsage,
   }
 }

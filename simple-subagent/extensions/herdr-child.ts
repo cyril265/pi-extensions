@@ -9,7 +9,7 @@ import {
   getToolDisplayItems,
 } from './tool-events.ts'
 import type { SubagentRunResult, ToolDisplayItem } from './types.ts'
-import { addAssistantUsage, createUsageStats } from './usage.ts'
+import { addAssistantUsage, createUsageStats, getAssistantContextTokens } from './usage.ts'
 
 const HERDR_RESULT_PATH_ENV = 'PI_SIMPLE_SUBAGENT_HERDR_RESULT_PATH'
 const HERDR_EVENT_PATH_ENV = 'PI_SIMPLE_SUBAGENT_HERDR_EVENT_PATH'
@@ -35,6 +35,7 @@ function writeAtomic(filePath: string, value: HerdrBridgeResult): void {
 function getRunResult(messages: Message[], liveTools: ToolDisplayItem[]): SubagentRunResult {
   const usage = createUsageStats()
   let firstTurnUsage: SubagentRunResult['firstTurnUsage'] | undefined
+  let contextTokens: number | undefined
 
   for (const message of messages) {
     if (message.role !== 'assistant') continue
@@ -46,6 +47,7 @@ function getRunResult(messages: Message[], liveTools: ToolDisplayItem[]): Subage
         cacheWrite: message.usage.cacheWrite,
       }
     }
+    contextTokens = getAssistantContextTokens(message) ?? contextTokens
     addAssistantUsage(usage, message)
   }
 
@@ -61,6 +63,7 @@ function getRunResult(messages: Message[], liveTools: ToolDisplayItem[]): Subage
     exitCode: failed ? 1 : 0,
     tools: dedupeToolDisplayItems([...liveTools, ...getToolDisplayItems(messages)]),
     usage,
+    contextTokens,
     firstTurnUsage,
   }
 }

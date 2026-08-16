@@ -3,7 +3,12 @@ import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { getHerdrParentLabel, parseHerdrFailure, partitionParentRecords } from './herdr-runner.ts'
+import {
+  formatSubagentTabLabel,
+  getHerdrParentLabel,
+  parseHerdrFailure,
+  partitionParentRecords,
+} from './herdr-runner.ts'
 import type { HerdrSubagentRecord } from './herdr-state.ts'
 
 function record(overrides: Partial<HerdrSubagentRecord>): HerdrSubagentRecord {
@@ -85,6 +90,11 @@ test('returns no reusable record when everything finished', () => {
     ['a'],
   )
   assert.equal(reusable, undefined)
+})
+
+test('formats compact subagent tab labels', () => {
+  assert.equal(formatSubagentTabLabel('Review GenAI Evaluation Coverage'), 'SU: Review Gen')
+  assert.equal(formatSubagentTabLabel('Fix'), 'SU: Fix')
 })
 
 test('reads structured Herdr command errors from stderr', () => {

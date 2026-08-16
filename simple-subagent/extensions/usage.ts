@@ -1,4 +1,5 @@
 import type { Message, Usage } from '@earendil-works/pi-ai'
+import { calculateContextTokens } from '@earendil-works/pi-coding-agent'
 import type { UsageStats } from './types.ts'
 
 export function createUsageStats(): UsageStats {
@@ -26,6 +27,17 @@ export function addAssistantUsage(stats: UsageStats, message: Message): void {
   addUsageStats(stats, message.usage)
 }
 
+export function getAssistantContextTokens(message: Message): number | undefined {
+  if (
+    message.role !== 'assistant' ||
+    message.stopReason === 'error' ||
+    message.stopReason === 'aborted'
+  ) {
+    return undefined
+  }
+  return calculateContextTokens(message.usage) || undefined
+}
+
 export function sumUsageStats(usages: UsageStats[]): UsageStats {
   const total = createUsageStats()
   for (const usage of usages) {
@@ -43,7 +55,7 @@ function getUsageTokenTotal(usage: UsageStats): number {
   return usage.input + usage.output + usage.cacheRead + usage.cacheWrite
 }
 
-function formatTokenCount(count: number): string {
+export function formatTokenCount(count: number): string {
   if (count < 1000) return count.toString()
   if (count < 10_000) return `${(count / 1000).toFixed(1)}k`
   if (count < 1_000_000) return `${Math.round(count / 1000)}k`
@@ -66,4 +78,17 @@ export function formatUsageStats(usage: UsageStats): string {
   const turns = `${usage.turns} turn${usage.turns === 1 ? '' : 's'}`
   const tokens = `${formatTokenCount(getUsageTokenTotal(usage))} tokens (${tokenParts.join(', ')})`
   return `${turns}, ${tokens}, cost ${formatCost(usage.cost)}`
+}
+
+export function formatCompactUsageStats(usage: UsageStats): string {
+  const tokenParts = [
+    `${formatTokenCount(usage.input)} in`,
+    `${formatTokenCount(usage.output)} out`,
+  ]
+  if (usage.cacheRead) tokenParts.push(`${formatTokenCount(usage.cacheRead)} cache read`)
+  if (usage.cacheWrite) tokenParts.push(`${formatTokenCount(usage.cacheWrite)} cache write`)
+
+  const turns = `${usage.turns} turn${usage.turns === 1 ? '' : 's'}`
+  const tokens = `${formatTokenCount(getUsageTokenTotal(usage))} tokens (${tokenParts.join(', ')})`
+  return `${turns} · ${tokens} · ${formatCost(usage.cost)}`
 }
