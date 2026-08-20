@@ -87,8 +87,7 @@ Before creating panes, every Herdr-backed run installs a plugin-owned Agent-view
 that omits panes marked with the `simple_subagent` metadata token. This automatically hides
 tool subagents from Herdr's built-in Agents list and its associated navigation targets while
 keeping them available in the Subagents overlay. The subagents remain real panes, continue
-to appear through `agent list`, and receive the run-level completion notification described
-below.
+to appear through `agent list`.
 
 Herdr supports one global transient Agent-view projection. Herdr can reject setup while
 another plugin owns that projection; in that case the tool uses the fallback described below.
@@ -107,12 +106,12 @@ The projection ends when the server exits or the companion plugin is disabled or
 Each agent runs in a separate `pi` process in JSON/print mode. Dispatch does not wait for it.
 In parent print or JSON single-shot mode, Pi holds the process open at `turn_end` until all jobs settle.
 
-Inside Herdr, each parallel tool call gets a background tab named after its parent. Every
-subagent runs a normal interactive Pi TUI in that tab, while the tool receives progress and
-the final result through a local event bridge. Panes are split along the largest available
-area, alternating right/down as their shape changes so larger runs stay usable. Completed
-panes remain available for review, and Herdr emits one `Subagents finished` notification with
-done/failed counts when the run settles.
+Inside Herdr, each workspace uses one background tab named `Subagents`. Every subagent runs a
+normal interactive Pi TUI in that tab, while the tool receives progress and the final result
+through a local event bridge. Panes are split along the largest available area, alternating
+right/down as their shape changes so larger runs stay usable. Before a new run, finished panes
+in the workspace are closed while active panes remain. Workspace setup uses a kernel-owned lock
+that is released if the launcher crashes.
 
 During its parent-assigned run, a subagent cannot call `runSubAgents`, `collectSubagents`, or
 `runSubAgentsWithContext`. Once that run settles, those tools become available in the retained
@@ -145,6 +144,7 @@ Session behavior:
 - generated and supplied sessions live in `<pi agent dir>/sessions/--simple-subagent--/`
 - managed session filenames use `subagent-<cwd hash>-<sessionKey>.jsonl`
 - the result includes the session key; reuse it to resume the child
+- completed results show the Pi session ID and a copyable `pi --session <path>` command
 - cancelled and failed jobs report their session keys so the parent can continue them
 - partial failures retain successful result paths, report each failed agent inline, and mark
   the tool result as an error
@@ -161,7 +161,7 @@ Enable the separate fork tool with `enableForkTool` in `~/.pi/agent/simple-subag
 
 - the fork includes the completed `runSubAgentsWithContext` tool result, so the child receives valid parent context without a dangling tool call
 - `runSubAgentsWithContext` accepts `name`, `prompt`, and optional `sessionKey`; model, thinking level, and cwd are inherited and locked
-- fork sessions inherit the parent session ID and prompt cache key so OpenAI routes parent and child requests to the same cache identity across processes and connections
+- fork sessions have unique Pi session IDs and inherit the parent's prompt cache key so OpenAI routes parent and child requests to the same cache identity across processes and connections
 - fork dispatch returns `terminate: true`; execution starts after the scheduling turn has persisted its tool result
 - fork progress and child tool calls are shown live above the editor, then retained in the result message
 - completed fork results use the same collect-or-push delivery as isolated jobs

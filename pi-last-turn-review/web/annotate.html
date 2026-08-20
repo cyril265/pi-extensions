@@ -21,16 +21,6 @@
 </style>
 <style>
   html, body { width: 100%; height: 100%; overflow: hidden; }
-  #editor-container { height: 100%; min-height: 0; overflow: hidden; }
-  #editor-container > div, #editor-container .monaco-editor { height: 100% !important; }
-  .monaco-editor .view-zones { z-index: 10; }
-  .view-zone-container {
-    padding: 8px 16px 10px 16px;
-    border-top: 1px solid var(--color-review-border, #30363d);
-    border-bottom: 1px solid var(--color-review-border, #30363d);
-    background: var(--color-review-panel, #161b22);
-    overflow: visible;
-  }
   .review-modal-backdrop {
     position: fixed; inset: 0;
     background: color-mix(in srgb, var(--color-review-bg, #010409) 86%, transparent);
@@ -46,29 +36,71 @@
     box-shadow: 0 16px 64px rgba(0, 0, 0, 0.5);
     padding: 24px;
   }
-  .monaco-editor .annotate-comment-line { background: rgba(88, 166, 255, 0.15); }
-  .monaco-editor .annotate-comment-glyph {
-    border-radius: 999px;
-    width: 8px !important;
-    height: 8px !important;
-    margin-left: 6px;
-    margin-top: 5px;
-    cursor: pointer;
-    background: var(--color-review-accent, #58a6ff);
+
+  .md-block { position: relative; border-radius: 6px; padding: 2px 8px 2px 40px; margin-left: -40px; }
+  .md-block:hover { background: color-mix(in srgb, var(--color-review-accent) 8%, transparent); }
+  .md-block.has-comment { background: color-mix(in srgb, var(--color-review-accent) 12%, transparent); }
+  .md-block-add {
+    position: absolute; left: 8px; top: 2px;
+    width: 22px; height: 22px;
+    display: none; align-items: center; justify-content: center;
+    border: none; border-radius: 5px; cursor: pointer;
+    background: var(--color-review-success);
+    color: #fff; font-size: 16px; font-weight: 700; line-height: 1;
   }
-  .monaco-editor .annotate-glyph-plus {
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' width='16' height='16'%3E%3Cpath fill='%23c9d1d9' d='M7.75 2a.75.75 0 0 1 .75.75V7h4.25a.75.75 0 0 1 0 1.5H8.5v4.25a.75.75 0 0 1-1.5 0V8.5H2.75a.75.75 0 0 1 0-1.5H7V2.75A.75.75 0 0 1 7.75 2Z'%3E%3C/path%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: center;
-    background-size: 12px;
-    background-color: var(--color-review-success, #238636);
-    border-radius: 4px;
+  .md-block:hover .md-block-add { display: flex; }
+
+  .selection-comment-button {
+    position: fixed; z-index: 50;
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--color-review-border); border-radius: 6px;
+    background: var(--color-review-success);
+    color: #fff; font-size: 12px; font-weight: 600;
     cursor: pointer;
-    margin-left: 2px;
-    margin-top: 2px;
-    width: 16px !important;
-    height: 16px !important;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
   }
+
+  .annotate-comment {
+    margin: 6px 0 14px 0;
+    padding: 10px 14px;
+    border: 1px solid var(--color-review-border);
+    border-radius: 8px;
+    background: var(--color-review-panel);
+  }
+
+  .markdown-body { font-size: 15px; line-height: 1.65; color: var(--color-review-text); }
+  .markdown-body h1, .markdown-body h2, .markdown-body h3,
+  .markdown-body h4, .markdown-body h5, .markdown-body h6 {
+    color: var(--color-review-strong); font-weight: 600; margin: 0.9em 0 0.45em;
+  }
+  .markdown-body h1 { font-size: 1.7em; border-bottom: 1px solid var(--color-review-border); padding-bottom: 0.25em; }
+  .markdown-body h2 { font-size: 1.4em; border-bottom: 1px solid var(--color-review-border); padding-bottom: 0.25em; }
+  .markdown-body h3 { font-size: 1.2em; }
+  .markdown-body p { margin: 0.5em 0; }
+  .markdown-body ul, .markdown-body ol { margin: 0.5em 0; padding-left: 1.6em; }
+  .markdown-body ul { list-style: disc; }
+  .markdown-body ol { list-style: decimal; }
+  .markdown-body li { margin: 0.2em 0; }
+  .markdown-body a { color: var(--color-review-accent); text-decoration: underline; }
+  .markdown-body code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em;
+    background: var(--color-review-hover); border-radius: 4px; padding: 0.15em 0.35em;
+  }
+  .markdown-body pre {
+    margin: 0.6em 0; padding: 12px 14px; overflow-x: auto;
+    background: var(--color-review-panel);
+    border: 1px solid var(--color-review-border); border-radius: 8px;
+  }
+  .markdown-body pre code { background: transparent; padding: 0; font-size: 0.88em; }
+  .markdown-body blockquote {
+    margin: 0.6em 0; padding: 0.1em 1em;
+    border-left: 3px solid var(--color-review-border); color: var(--color-review-muted);
+  }
+  .markdown-body hr { margin: 1.2em 0; border: none; border-top: 1px solid var(--color-review-border); }
+  .markdown-body table { border-collapse: collapse; margin: 0.6em 0; }
+  .markdown-body th, .markdown-body td { border: 1px solid var(--color-review-border); padding: 6px 12px; }
+  .markdown-body th { color: var(--color-review-strong); background: var(--color-review-panel); }
 </style>
 </head>
 <body class="h-full overflow-hidden bg-review-bg text-review-text antialiased">
@@ -82,16 +114,17 @@
       <div id="summary" class="max-w-[24rem] truncate text-[11px] text-review-muted"></div>
       <button id="overall-comment-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1.5 text-xs font-medium text-review-text hover:bg-review-hover">Overall note</button>
       <button id="copy-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1.5 text-xs font-medium text-review-text hover:bg-review-hover">Copy text</button>
-      <button id="toggle-wrap-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1.5 text-xs font-medium text-review-text hover:bg-review-hover">Wrap lines: on</button>
       <button id="cancel-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1.5 text-xs font-medium text-review-text hover:bg-review-error/10 hover:text-review-error hover:border-review-error/30">Cancel</button>
       <button id="submit-button" disabled class="cursor-pointer rounded-md border border-review-border bg-review-success px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:cursor-default disabled:opacity-50">Finish annotation</button>
     </div>
   </div>
-  <div id="editor-container" class="min-h-0 min-w-0 flex-1"></div>
+  <div class="min-h-0 flex-1 overflow-y-auto">
+    <div id="markdown-content" class="markdown-body mx-auto max-w-4xl px-12 py-8"></div>
+  </div>
 </div>
 
 <script id="annotate-data" type="application/json">__INLINE_DATA__</script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.2/min/vs/loader.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
 <script>
 __INLINE_JS__
 </script>

@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { once } from 'node:events'
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import {
-  formatSubagentTabLabel,
+  acquireHerdrWorkspaceLock,
   getHerdrParentLabel,
+  HERDR_SUBAGENT_TAB_LABEL,
   parseHerdrFailure,
-  partitionParentRecords,
+  partitionWorkspaceRecords,
 } from './herdr-runner.ts'
 import type { HerdrSubagentRecord } from './herdr-state.ts'
 
@@ -34,13 +37,13 @@ function record(overrides: Partial<HerdrSubagentRecord>): HerdrSubagentRecord {
   }
 }
 
-test('partitions finished records and reuses the newest live one', () => {
+test('partitions finished workspace records and reuses the newest live one', () => {
   const records = [
     record({ id: 'a', paneId: 'p1', status: 'done', createdAt: '2026-01-01T00:00:01.000Z' }),
     record({ id: 'b', paneId: 'p2', status: 'running', createdAt: '2026-01-01T00:00:02.000Z' }),
     record({ id: 'c', paneId: 'p3', status: 'running', createdAt: '2026-01-01T00:00:03.000Z' }),
     record({ id: 'dead-pane', paneId: 'gone' }),
-    record({ id: 'other-parent', paneId: 'p4', parentSessionId: 'other' }),
+    record({ id: 'other-parent', paneId: 'p4', parentSessionId: 'other', status: 'done' }),
     record({ id: 'other-workspace', paneId: 'p5', workspaceId: 'other' }),
   ]
   const paneStatuses = new Map<string, string | undefined>([
@@ -50,15 +53,10 @@ test('partitions finished records and reuses the newest live one', () => {
     ['p4', 'idle'],
     ['p5', 'idle'],
   ])
-  const { finished, reusable } = partitionParentRecords(
-    records,
-    paneStatuses,
-    'workspace',
-    'parent-session',
-  )
+  const { finished, reusable } = partitionWorkspaceRecords(records, paneStatuses, 'workspace')
   assert.deepEqual(
     finished.map(item => item.id),
-    ['a', 'b'],
+    ['a', 'b', 'other-parent'],
   )
   assert.equal(reusable?.id, 'c')
 })
@@ -66,12 +64,7 @@ test('partitions finished records and reuses the newest live one', () => {
 test('does not close active panes even when the record says finished', () => {
   const records = [record({ id: 'a', paneId: 'p1', status: 'done' })]
   const paneStatuses = new Map<string, string | undefined>([['p1', 'working']])
-  const { finished, reusable } = partitionParentRecords(
-    records,
-    paneStatuses,
-    'workspace',
-    'parent-session',
-  )
+  const { finished, reusable } = partitionWorkspaceRecords(records, paneStatuses, 'workspace')
   assert.deepEqual(finished, [])
   assert.equal(reusable?.id, 'a')
 })
@@ -79,12 +72,7 @@ test('does not close active panes even when the record says finished', () => {
 test('returns no reusable record when everything finished', () => {
   const records = [record({ id: 'a', paneId: 'p1', status: 'failed' })]
   const paneStatuses = new Map<string, string | undefined>([['p1', 'idle']])
-  const { finished, reusable } = partitionParentRecords(
-    records,
-    paneStatuses,
-    'workspace',
-    'parent-session',
-  )
+  const { finished, reusable } = partitionWorkspaceRecords(records, paneStatuses, 'workspace')
   assert.deepEqual(
     finished.map(item => item.id),
     ['a'],
@@ -92,9 +80,92 @@ test('returns no reusable record when everything finished', () => {
   assert.equal(reusable, undefined)
 })
 
-test('formats compact subagent tab labels', () => {
-  assert.equal(formatSubagentTabLabel('Review GenAI Evaluation Coverage'), 'SU: Review Gen')
-  assert.equal(formatSubagentTabLabel('Fix'), 'SU: Fix')
+test('uses one stable subagent tab label per workspace', () => {
+  assert.equal(HERDR_SUBAGENT_TAB_LABEL, 'Subagents')
+})
+
+test('serializes subagent tab setup within a workspace', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'simple-subagent-herdr-lock-'))
+  const previousStateDirectory = process.env.SIMPLE_SUBAGENT_STATE_DIR
+  process.env.SIMPLE_SUBAGENT_STATE_DIR = directory
+
+  try {
+    const releaseFirst = await acquireHerdrWorkspaceLock(
+      'workspace',
+      AbortSignal.timeout(2000),
+      1,
+    )
+    let secondAcquired = false
+    const second = acquireHerdrWorkspaceLock('workspace', AbortSignal.timeout(2000), 1).then(
+      release => {
+        secondAcquired = true
+        return release
+      },
+    )
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(secondAcquired, false)
+    releaseFirst()
+    const releaseSecond = await second
+    assert.equal(secondAcquired, true)
+    releaseSecond()
+  } finally {
+    if (previousStateDirectory === undefined) delete process.env.SIMPLE_SUBAGENT_STATE_DIR
+    else process.env.SIMPLE_SUBAGENT_STATE_DIR = previousStateDirectory
+    await rm(directory, { recursive: true })
+  }
+})
+
+test('releases the workspace lock after a hard crash', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'simple-subagent-herdr-crash-lock-'))
+  const workspaceId = path.basename(directory)
+  const moduleUrl = new URL('./herdr-runner.ts', import.meta.url).href
+  let child: ChildProcess | undefined
+
+  try {
+    child = spawn(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        `import { acquireHerdrWorkspaceLock } from ${JSON.stringify(moduleUrl)}; await acquireHerdrWorkspaceLock(${JSON.stringify(workspaceId)}); process.stdout.write('locked\\n'); setInterval(() => {}, 1000);`,
+      ],
+      {
+        env: { ...process.env, SIMPLE_SUBAGENT_STATE_DIR: directory },
+        stdio: ['ignore', 'pipe', 'inherit'],
+      },
+    )
+    await new Promise<void>((resolve, reject) => {
+      child?.stdout?.once('data', () => resolve())
+      child?.once('exit', code => reject(new Error(`Lock holder exited with code ${code}`)))
+    })
+    const previousStateDirectory = process.env.SIMPLE_SUBAGENT_STATE_DIR
+    process.env.SIMPLE_SUBAGENT_STATE_DIR = directory
+    try {
+      let parentAcquired = false
+      const parentLock = acquireHerdrWorkspaceLock(
+        workspaceId,
+        AbortSignal.timeout(2000),
+        1,
+      ).then(release => {
+        parentAcquired = true
+        return release
+      })
+      await new Promise(resolve => setTimeout(resolve, 10))
+      assert.equal(parentAcquired, false)
+      const exited = once(child, 'exit')
+      child.kill('SIGKILL')
+      await exited
+      const release = await parentLock
+      assert.equal(parentAcquired, true)
+      release()
+    } finally {
+      if (previousStateDirectory === undefined) delete process.env.SIMPLE_SUBAGENT_STATE_DIR
+      else process.env.SIMPLE_SUBAGENT_STATE_DIR = previousStateDirectory
+    }
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+    await rm(directory, { recursive: true })
+  }
 })
 
 test('reads structured Herdr command errors from stderr', () => {

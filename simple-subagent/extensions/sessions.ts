@@ -1,4 +1,4 @@
-import { createHash, randomInt } from 'node:crypto'
+import { createHash, randomInt, randomUUID } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -77,6 +77,15 @@ export function getSubagentSessionPath(cwd: string, sessionKey: string): string 
   return path.join(sessionDirectory, `subagent-${cwdHash}-${sanitizeFileName(sessionKey)}.jsonl`)
 }
 
+export function readSubagentSessionId(sessionPath: string): string | undefined {
+  if (!fs.existsSync(sessionPath)) return undefined
+  return SessionManager.open(sessionPath, path.dirname(sessionPath)).getSessionId()
+}
+
+export function formatPiSessionCommand(sessionPath: string): string {
+  return `pi --session '${sessionPath.replaceAll("'", "'\\''")}'`
+}
+
 function getForkMetadataPath(sessionPath: string): string {
   return `${sessionPath}.fork.json`
 }
@@ -94,6 +103,27 @@ export function writeForkMetadata(sessionPath: string, metadata: ForkMetadata): 
     flag: 'wx',
   })
   fs.renameSync(temporaryPath, metadataPath)
+}
+
+export function ensureUniqueForkSessionId(
+  sessionPath: string,
+  inheritedSessionId: string,
+): string {
+  const currentId = SessionManager.open(sessionPath, path.dirname(sessionPath)).getSessionId()
+  if (currentId !== inheritedSessionId) return currentId
+
+  const content = fs.readFileSync(sessionPath, 'utf8')
+  const newline = content.indexOf('\n')
+  if (newline < 0) throw new Error(`Forked session has no header at ${sessionPath}`)
+  const header = JSON.parse(content.slice(0, newline)) as { type: string; id: string }
+  if (header.type !== 'session') throw new Error(`Forked session has no header at ${sessionPath}`)
+  const id = randomUUID()
+  const temporaryPath = `${sessionPath}.${process.pid}.tmp`
+  fs.writeFileSync(temporaryPath, `${JSON.stringify({ ...header, id })}${content.slice(newline)}`, {
+    flag: 'wx',
+  })
+  fs.renameSync(temporaryPath, sessionPath)
+  return id
 }
 
 export function findForkLeafId(
@@ -133,16 +163,16 @@ export function createForkedSession(
   sourceSessionPath: string,
   forkLeafId: string,
   targetSessionPath: string,
-  inheritedSessionId: string,
 ): void {
   fs.mkdirSync(path.dirname(targetSessionPath), { recursive: true })
   const source = SessionManager.open(sourceSessionPath, path.dirname(targetSessionPath))
   const generatedPath = source.createBranchedSession(forkLeafId)
   if (!generatedPath) throw new Error('Failed to create persisted forked session')
+  const id = SessionManager.open(generatedPath, path.dirname(targetSessionPath)).getSessionId()
 
   const header = source.getHeader()
   if (!header) throw new Error('Forked session has no header')
-  const entries = [{ ...header, id: inheritedSessionId }, ...source.getEntries()]
+  const entries = [{ ...header, id }, ...source.getEntries()]
   fs.writeFileSync(
     targetSessionPath,
     `${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`,

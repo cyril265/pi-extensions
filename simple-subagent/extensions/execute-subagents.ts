@@ -3,8 +3,8 @@ import * as path from 'node:path'
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { runSubAgent } from './child-process.ts'
 import {
-  formatSubagentTabLabel,
   getHerdrParentLabel,
+  HERDR_SUBAGENT_TAB_LABEL,
   HerdrInitializationError,
   isHerdrEnvironment,
   runSubagentsInHerdr,
@@ -19,9 +19,12 @@ import { resolveEffectiveModel } from './model.ts'
 import {
   createForkedSession,
   createRunDirectory,
+  ensureUniqueForkSessionId,
   findForkLeafId,
+  formatPiSessionCommand,
   getSubagentSessionPath,
   readForkMetadata,
+  readSubagentSessionId,
   resolveSubagentSessionKey,
   sanitizeFileName,
   writeForkMetadata,
@@ -29,7 +32,6 @@ import {
 import { cloneToolArgs } from './tool-events.ts'
 import type {
   ForkMetadata,
-  LiveDisplayEvent,
   SubagentRequest,
   SubagentRunResult,
   SubagentResultDetails,
@@ -57,19 +59,8 @@ type PreparedAgent = SubagentRequest & {
   promptCacheKey: string | undefined
 }
 
-function snapshotDetails(
-  liveEvents: LiveDisplayEvent[],
-  agents: SubagentResultDetails['agents'],
-): SubagentResultDetails {
+function snapshotDetails(agents: SubagentResultDetails['agents']): SubagentResultDetails {
   return {
-    liveEvents: liveEvents.map(event => ({
-      type: 'tool',
-      agent: event.agent,
-      tool: {
-        name: event.tool.name,
-        args: cloneToolArgs(event.tool.args),
-      },
-    })),
     agents: agents.map(agent => ({
       ...agent,
       tools: agent.tools?.map(tool => ({
@@ -91,6 +82,8 @@ export function formatFinishedAgentResult(
     thinking: ThinkingLevel
     effectiveModel: string
     sessionKey: string
+    sessionId: string
+    sessionPath: string
   },
   outputPath: string,
   result: SubagentRunResult,
@@ -99,6 +92,8 @@ export function formatFinishedAgentResult(
   const lines = [
     `${agent.name} (${agent.thinking}, ${agent.effectiveModel}, exit ${result.exitCode}): ${outputPath}`,
     `sessionKey: ${agent.sessionKey}`,
+    `sessionId: ${agent.sessionId}`,
+    `continue: ${formatPiSessionCommand(agent.sessionPath)}`,
   ]
   if (result.contextTokens !== undefined) {
     lines.push(`final context: ${formatTokenCount(result.contextTokens)}`)
@@ -273,6 +268,7 @@ export function startJob(
           )
         }
       }
+      ensureUniqueForkSessionId(agent.sessionPath, existingMetadata.sourceSessionId)
       return {
         ...agent,
         promptCacheKey: inheritsParentCache ? existingMetadata.promptCacheKey : undefined,
@@ -283,7 +279,6 @@ export function startJob(
       parentFork.sourceSessionPath,
       parentFork.forkLeafId,
       agent.sessionPath,
-      parentFork.sourceSessionId,
     )
     try {
       writeForkMetadata(agent.sessionPath, expectedMetadata)
@@ -305,6 +300,8 @@ export function startJob(
     prompt: agent.prompt,
     cwd: agent.cwd,
     sessionKey: agent.sessionKey,
+    sessionId: readSubagentSessionId(agent.sessionPath),
+    sessionPath: agent.sessionPath,
     forkParent: agent.forkParent,
     status: 'queued',
     tools: [],
@@ -314,8 +311,10 @@ export function startJob(
     text: `${kind === 'fork' ? 'Forked subagents' : 'Subagents'} failed: ${errorText(error)}`,
     details: {
       ...latestDetails,
-      agents: latestDetails.agents.map(agent => ({
+      agents: latestDetails.agents.map((agent, index) => ({
         ...agent,
+        sessionId:
+          agent.sessionId ?? readSubagentSessionId(preparedAgents[index].sessionPath),
         status:
           agent.status === 'done' || agent.status === 'failed'
             ? agent.status
@@ -333,20 +332,18 @@ export function startJob(
     agents: preparedAgents.map(agent => ({ name: agent.name, sessionKey: agent.sessionKey })),
     failureResult,
     run: async (signal, update) => {
-      const liveEvents: LiveDisplayEvent[] = []
       const liveAgents: SubagentResultDetails['agents'] = initialAgents.map(agent => ({
         ...agent,
         tools: [],
       }))
       const emitLiveUpdate = () => {
         if (signal.aborted) return
-        latestDetails = snapshotDetails(liveEvents, liveAgents)
+        latestDetails = snapshotDetails(liveAgents)
         update(latestDetails)
       }
       const emitAgentTool = (index: number, tool: ToolDisplayItem) => {
         liveAgents[index].tools ??= []
         liveAgents[index].tools.push(tool)
-        liveEvents.push({ type: 'tool', agent: liveAgents[index].name, tool })
         emitLiveUpdate()
       }
 
@@ -355,6 +352,7 @@ export function startJob(
         index: number
         outputPath: string
         result: Awaited<ReturnType<typeof runSubAgent>>
+        sessionId: string
       }> = []
       const failures: Array<{ index: number; error: string }> = []
       let herdrParentLabel: string | undefined
@@ -386,6 +384,9 @@ export function startJob(
           herdrParentLabel = parentLabel
           results = herdrOutcomes.flatMap(outcome => {
             if ('error' in outcome) {
+              liveAgents[outcome.index].sessionId = readSubagentSessionId(
+                preparedAgents[outcome.index].sessionPath,
+              )
               failures.push({ index: outcome.index, error: outcome.error })
               return []
             }
@@ -396,11 +397,14 @@ export function startJob(
               `${sanitizeFileName(agent.name)}-result.md`,
             )
             fs.writeFileSync(outputPath, result.text)
+            const sessionId = readSubagentSessionId(agent.sessionPath)
+            if (!sessionId) throw new Error(`Subagent "${agent.name}" created no Pi session`)
             liveAgents[index].exitCode = result.exitCode
             liveAgents[index].outputPath = outputPath
+            liveAgents[index].sessionId = sessionId
             liveAgents[index].usage = result.usage
             emitLiveUpdate()
-            return [{ index, outputPath, result }]
+            return [{ index, outputPath, result, sessionId }]
           })
         } catch (error) {
           if (herdrRunStarted && !(error instanceof HerdrInitializationError)) throw error
@@ -430,14 +434,18 @@ export function startJob(
                 `${sanitizeFileName(agent.name)}-result.md`,
               )
               fs.writeFileSync(outputPath, result.text)
+              const sessionId = readSubagentSessionId(agent.sessionPath)
+              if (!sessionId) throw new Error(`Subagent "${agent.name}" created no Pi session`)
               liveAgents[index].status = result.exitCode === 0 ? 'done' : 'failed'
               liveAgents[index].exitCode = result.exitCode
               liveAgents[index].outputPath = outputPath
+              liveAgents[index].sessionId = sessionId
               liveAgents[index].usage = result.usage
               emitLiveUpdate()
-              return { index, outputPath, result }
+              return { index, outputPath, result, sessionId }
             } catch (error) {
               liveAgents[index].status = signal.aborted ? 'interrupted' : 'failed'
+              liveAgents[index].sessionId = readSubagentSessionId(agent.sessionPath)
               if (!signal.aborted) emitLiveUpdate()
               throw error
             }
@@ -470,10 +478,20 @@ export function startJob(
           if (!failed) return []
           return [
             `${agent.name}: FAILED (exit/unknown) resume with sessionKey "${agent.sessionKey}": ${failed.error}`,
+            ...(liveAgents[index].sessionId
+              ? [
+                  `sessionId: ${liveAgents[index].sessionId}`,
+                  `continue: ${formatPiSessionCommand(preparedAgents[index].sessionPath)}`,
+                ]
+              : []),
           ]
         }
         return formatFinishedAgentResult(
-          agent,
+          {
+            ...agent,
+            sessionId: successful.sessionId,
+            sessionPath: preparedAgents[index].sessionPath,
+          },
           successful.outputPath,
           successful.result,
           !!(agent.forkParent && preparedAgents[index].promptCacheKey),
@@ -481,22 +499,17 @@ export function startJob(
       })
       if (herdrParentLabel) {
         lines.push(
-          `Panes: tab "${formatSubagentTabLabel(herdrParentLabel)}" in Herdr`,
+          `Panes: tab "${HERDR_SUBAGENT_TAB_LABEL}" in Herdr`,
           "Review: run 'herdr plugin pane open --plugin local.simple-subagent --entrypoint subagents --placement overlay --focus' or press your bound key",
         )
       }
       if (herdrWarning) lines.push(`Warning: Herdr mode unavailable: ${herdrWarning}`)
-      latestDetails = snapshotDetails(liveEvents, liveAgents)
-      const doneCount = results.filter(({ result }) => result.exitCode === 0).length
-      const failedCount = preparedAgents.length - doneCount
+      latestDetails = snapshotDetails(liveAgents)
 
       return {
         text: lines.join('\n'),
         details: latestDetails,
         isError: failures.length > 0 || results.some(({ result }) => result.exitCode !== 0),
-        herdrNotification: herdrParentLabel
-          ? { cwd: preparedAgents[0].cwd, doneCount, failedCount }
-          : undefined,
       }
     },
   })

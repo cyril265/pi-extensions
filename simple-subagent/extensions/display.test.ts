@@ -113,6 +113,8 @@ test('renders completed usage on the agent line', () => {
           thinking: 'low',
           suppliedModel: 'sol',
           status: 'done',
+          sessionId: '019f9304-4fcc-7587-a285-772db38d479f',
+          sessionPath: '/tmp/reviewer-session.jsonl',
           usage: {
             turns: 1,
             input: 7200,
@@ -128,6 +130,8 @@ test('renders completed usage on the agent line', () => {
     [
       'runSubAgents · 1/1 done',
       '✓ reviewer · sol · 1 turn · 7.2k tokens (7.2k in, 8 out) · $0.0361',
+      '  session 019f9304-4fcc-7587-a285-772db38d479f',
+      "  pi --session '/tmp/reviewer-session.jsonl'",
     ].join('\n'),
   )
 })

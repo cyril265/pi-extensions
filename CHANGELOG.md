@@ -2,6 +2,24 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-08-17 10:00
+
+### simple-subagent
+
+- Removed the tool-call trace from subagent results entirely; results always render the compact per-agent summary, and the exported renderer is now `renderLiveCompact` instead of `renderSubagentDetails`.
+- Reused one Herdr subagent tab named `Subagents` per workspace, with finished panes cleaned before each new run and crash-safe setup locking.
+- Added Pi session IDs and copyable `pi --session <path>` commands to settled results, plus unique IDs for context-forked subagents.
+- Removed all Herdr notifications from `simple-subagent`.
+
+## 2026-08-16 19:00
+
+### pi-last-turn-review
+
+- Replaced the Monaco source view in `/annotate-turn` with rendered markdown; comments now anchor to markdown blocks (hover a block, click +) instead of gutter line numbers.
+- Annotation comments carry the block's line range, and the generated prompt quotes the full block text (truncated at 300 chars).
+- Added selection comments: select any passage inside a block and click the floating Comment button; the generated prompt quotes up to 300 characters of the selected text.
+- Fixed the block + button being unreachable: the hover zone now includes the button area, so hover no longer drops while moving to it.
+
 ## 2026-08-16 17:00
 
 ### simple-subagent

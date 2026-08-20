@@ -1,11 +1,13 @@
 import { execFile } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import * as fs from 'node:fs'
+import { createServer } from 'node:net'
 import * as path from 'node:path'
 import { promisify } from 'node:util'
 import { hideSubagents } from '../herdr/agent-view.ts'
 import {
   getHerdrRecordPath,
+  getHerdrStateDirectory,
   type HerdrSubagentRecord,
   pruneHerdrRecords,
   readHerdrRecords,
@@ -70,17 +72,13 @@ export type HerdrSubagentOutcome =
 
 export class HerdrInitializationError extends Error {}
 
-export function partitionParentRecords(
+export function partitionWorkspaceRecords(
   records: HerdrSubagentRecord[],
   paneStatuses: Map<string, string | undefined>,
   workspaceId: string,
-  parentSessionId: string,
 ): { finished: HerdrSubagentRecord[]; reusable: HerdrSubagentRecord | undefined } {
   const live = records.filter(
-    record =>
-      record.workspaceId === workspaceId &&
-      record.parentSessionId === parentSessionId &&
-      paneStatuses.has(record.paneId),
+    record => record.workspaceId === workspaceId && paneStatuses.has(record.paneId),
   )
   const finished = live.filter(record => {
     const paneStatus = paneStatuses.get(record.paneId)
@@ -99,9 +97,7 @@ export function partitionParentRecords(
   return { finished, reusable }
 }
 
-export function formatSubagentTabLabel(parentLabel: string): string {
-  return `SU: ${parentLabel.slice(0, 10).trimEnd()}`
-}
+export const HERDR_SUBAGENT_TAB_LABEL = 'Subagents'
 
 class HerdrCommandError extends Error {
   readonly code: string | undefined
@@ -109,6 +105,59 @@ class HerdrCommandError extends Error {
   constructor(code: string | undefined, message: string) {
     super(message)
     this.code = code
+  }
+}
+
+export async function acquireHerdrWorkspaceLock(
+  workspaceId: string,
+  signal?: AbortSignal,
+  retryDelayMs = 100,
+): Promise<() => void> {
+  const lockDirectory = path.join(getHerdrStateDirectory(), 'locks')
+  const lockId = createHash('sha256').update(workspaceId).digest('hex').slice(0, 16)
+  fs.mkdirSync(lockDirectory, { recursive: true })
+
+  while (true) {
+    if (signal?.aborted) throw new Error('Subagent launch was aborted')
+
+    if (process.platform === 'darwin') {
+      try {
+        // O_EXLOCK is a stable Darwin open(2) flag, but Node does not expose it in fs.constants.
+        const fd = fs.openSync(
+          path.join(lockDirectory, `${lockId}.lock`),
+          fs.constants.O_CREAT | fs.constants.O_RDWR | fs.constants.O_NONBLOCK | 0x20,
+          0o600,
+        )
+        return () => fs.closeSync(fd)
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code !== 'EAGAIN' && code !== 'EWOULDBLOCK') throw error
+      }
+    } else if (process.platform === 'linux') {
+      const uid = process.getuid?.()
+      if (uid === undefined) throw new Error('Linux workspace locking requires process.getuid')
+      const server = createServer()
+      const acquired = await new Promise<boolean>((resolve, reject) => {
+        server.once('error', (error: NodeJS.ErrnoException) => {
+          if (error.code === 'EADDRINUSE') resolve(false)
+          else reject(error)
+        })
+        server.listen(`\0simple-subagent-${uid}-${lockId}`, () => resolve(true))
+      })
+      if (acquired) {
+        if (signal?.aborted) {
+          server.close()
+          throw new Error('Subagent launch was aborted')
+        }
+        return () => {
+          server.close()
+        }
+      }
+    } else {
+      throw new Error(`Herdr workspace locking is unsupported on ${process.platform}`)
+    }
+
+    await new Promise(resolve => setTimeout(resolve, retryDelayMs))
   }
 }
 
@@ -188,26 +237,6 @@ export async function getHerdrParentLabel(fallback: string, cwd: string): Promis
   const tabId = process.env.HERDR_TAB_ID
   if (!tabId) return fallback
   return (await runHerdr(['tab', 'get', tabId], cwd)).result?.tab?.label || fallback
-}
-
-export async function notifyHerdrSubagentsFinished(
-  cwd: string,
-  doneCount: number,
-  failedCount: number,
-): Promise<void> {
-  await runHerdr(
-    [
-      'notification',
-      'show',
-      'Subagents finished',
-      '--body',
-      `${doneCount} done, ${failedCount} failed`,
-      '--sound',
-      'done',
-    ],
-    cwd,
-    false,
-  ).catch(() => {})
 }
 
 function getChildEnvironment(agent: SpawnedHerdrAgent): Record<string, string> {
@@ -475,6 +504,7 @@ export async function runSubagentsInHerdr(
   let tabId: string
   let rootPaneId: string
   let reuseSplitPaneId: string | undefined
+  let releaseWorkspaceLock: (() => void) | undefined
   try {
     const workspace = process.env.HERDR_WORKSPACE_ID
     const parentPane = process.env.HERDR_PANE_ID
@@ -483,6 +513,9 @@ export async function runSubagentsInHerdr(
     parentPaneId = parentPane
     const socketPath = process.env.HERDR_SOCKET_PATH
     if (!socketPath) throw new Error('HERDR_SOCKET_PATH is required')
+
+    releaseWorkspaceLock = await acquireHerdrWorkspaceLock(workspaceId, signal)
+    if (signal?.aborted) throw new Error('Subagent launch was aborted')
 
     await hideSubagents(socketPath, 'local.simple-subagent')
 
@@ -493,11 +526,10 @@ export async function runSubagentsInHerdr(
     const paneStatuses = new Map(
       paneList.result.panes.map(pane => [pane.pane_id, pane.agent_status]),
     )
-    const { finished, reusable } = partitionParentRecords(
+    const { finished, reusable } = partitionWorkspaceRecords(
       readHerdrRecords(),
       paneStatuses,
       workspaceId,
-      parentSessionId,
     )
     await Promise.allSettled(
       finished.map(async record => {
@@ -533,7 +565,7 @@ export async function runSubagentsInHerdr(
       rootPaneId = ''
       reuseSplitPaneId = reusable.paneId
       await runHerdr(
-        ['tab', 'rename', tabId, formatSubagentTabLabel(parentLabel)],
+        ['tab', 'rename', tabId, HERDR_SUBAGENT_TAB_LABEL],
         firstAgent.cwd,
         false,
       ).catch(() => {})
@@ -547,7 +579,7 @@ export async function runSubagentsInHerdr(
           '--cwd',
           agents[0].cwd,
           '--label',
-          formatSubagentTabLabel(parentLabel),
+          HERDR_SUBAGENT_TAB_LABEL,
           '--no-focus',
           ...getChildEnvironmentArguments(firstAgent),
         ],
@@ -556,12 +588,22 @@ export async function runSubagentsInHerdr(
       const createdTabId = tabResponse.result?.tab?.tab_id
       const createdRootPaneId = tabResponse.result?.root_pane?.pane_id
       if (!(createdTabId && createdRootPaneId)) {
+        if (createdTabId) {
+          await runHerdr(['tab', 'close', createdTabId], firstAgent.cwd, false).catch(() => {})
+        } else if (createdRootPaneId) {
+          await runHerdr(
+            ['pane', 'close', createdRootPaneId],
+            firstAgent.cwd,
+            false,
+          ).catch(() => {})
+        }
         throw new Error('Herdr tab creation returned no tab or pane ID')
       }
       tabId = createdTabId
       rootPaneId = createdRootPaneId
     }
   } catch (error) {
+    releaseWorkspaceLock?.()
     throw new HerdrInitializationError(error instanceof Error ? error.message : String(error))
   }
 
@@ -656,6 +698,8 @@ export async function runSubagentsInHerdr(
       await runHerdr(['tab', 'close', tabId], firstAgent.cwd, false).catch(() => {})
     }
     throw error
+  } finally {
+    releaseWorkspaceLock?.()
   }
 
   const outcomes = await Promise.allSettled(

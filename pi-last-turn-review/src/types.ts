@@ -73,6 +73,8 @@ export type ReviewWindowMessage =
 export interface AnnotateComment {
   id: string
   line: number
+  endLine: number
+  quote: string | null
   body: string
 }
 

@@ -8,11 +8,6 @@ export type SubagentJobResult = {
   text: string
   details: SubagentResultDetails
   isError: boolean
-  herdrNotification?: {
-    cwd: string
-    doneCount: number
-    failedCount: number
-  }
 }
 
 export type SubagentJobAgent = {

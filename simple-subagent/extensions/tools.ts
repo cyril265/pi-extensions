@@ -8,11 +8,10 @@ import {
   renderDispatchResult,
   formatResultText,
   renderAgentsOverview,
-  renderSubagentDetails,
+  renderLiveCompact,
   renderSubagentWidget,
 } from './display.ts'
 import { startJob } from './execute-subagents.ts'
-import { notifyHerdrSubagentsFinished } from './herdr-runner.ts'
 import {
   createJobId,
   getPushOptions,
@@ -161,16 +160,12 @@ export function registerSubagentTools(
         }
       })
     },
-    onSettled(job, result) {
+    onSettled(job) {
       const ctx = jobContexts.get(job.id)
       if (ctx?.mode === 'tui') ctx.ui.setWidget(`simple-subagent-${job.id}`, undefined)
       widgetDetails.delete(job.id)
       widgetJobs.delete(job.id)
       widgetRenders.delete(job.id)
-      if (result.herdrNotification) {
-        const { cwd, doneCount, failedCount } = result.herdrNotification
-        void notifyHerdrSubagentsFinished(cwd, doneCount, failedCount)
-      }
     },
     onPush(job, result) {
       const ctx = jobContexts.get(job.id)
@@ -211,7 +206,7 @@ export function registerSubagentTools(
     name: 'runSubAgents',
     label: 'Run Subagents',
     description: `
-        Dispatch isolated subagents and return a job ID plus session keys immediately. A subagent has no knowledge of the parent context, so provide complete instructions. Continue independent work after dispatch. Call collectSubagents only when you need to block; otherwise results are delivered automatically.
+        Dispatch isolated subagents and return a job ID plus session keys immediately. A subagent has no knowledge of the parent context, so provide complete instructions. Continue independent work after dispatch. Call collectSubagents only when you need to block; otherwise end turn and results are delivered automatically.
         A job settles only when ALL its agents finish. Batch agents into one call only when you need their results together; dispatch separate calls for independently actionable tasks so each result arrives as soon as it is ready.
         sessionKey: Optional reusable session name. If omitted, a durable name-based key with an 8-character mixed-case alphanumeric suffix is generated and returned. Reuse a key only for follow-up work that benefits from its existing context, and use distinct keys for agents in the same call.
         overrideModel: ${Object.keys(config.modelAliases).length > 0 ? `options ${Object.keys(config.modelAliases).join(', ')}` : 'use provider/model'}
@@ -303,9 +298,9 @@ export function registerSubagentTools(
         0,
       )
     },
-    renderResult(result, { expanded }, theme) {
+    renderResult(result, _options, theme) {
       if (result.details?.agents.length) {
-        return new Text(renderSubagentDetails(result.details, expanded, theme), 0, 0)
+        return new Text(renderLiveCompact(result.details.agents, theme), 0, 0)
       }
       return new Text(formatResultText(getMessageText(result.content), theme), 0, 0)
     },
@@ -438,14 +433,14 @@ export function registerSubagentTools(
     },
   }
 
-  pi.registerMessageRenderer('forked-subagent-results', (message, { expanded }, theme) => {
+  pi.registerMessageRenderer('forked-subagent-results', (message, _options, theme) => {
     const details = message.details as ForkedSubagentResultsDetails | undefined
     if (!details?.jobs.length) return new Text(getMessageText(message.content), 0, 0)
     return new Text(
       details.jobs
         .map(job => {
           const title = job.kind === 'fork' ? 'runSubAgentsWithContext' : 'runSubAgents'
-          return `${theme.fg('muted', `job ${job.jobId}`)}\n${renderSubagentDetails(job.result.details, expanded, theme, title)}`
+          return `${theme.fg('muted', `job ${job.jobId}`)}\n${renderLiveCompact(job.result.details.agents, theme, title)}`
         })
         .join('\n\n'),
       0,

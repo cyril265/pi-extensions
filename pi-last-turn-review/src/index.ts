@@ -649,7 +649,7 @@ function createAnnotateWindowData(text: string, theme: ReviewTheme): AnnotateWin
     title: 'Annotate turn',
     sourceLabel: 'latest response',
     sourceHint:
-      'Annotate the final assistant response from the latest agent turn. Hover or click line numbers in the gutter to add an inline comment.',
+      'Annotate the final assistant response from the latest agent turn. Hover a block and click + to comment on it, or select text to comment on a passage.',
     text,
     theme,
   }
@@ -714,9 +714,17 @@ function composeAnnotatePrompt(sourceText: string, payload: AnnotateSubmitPayloa
   }
 
   for (const comment of comments) {
-    const sourceLine = sourceLines[comment.line - 1]?.trim()
-    if (sourceLine != null && sourceLine.length > 0) {
-      lines.push(`"${sourceLine}"`)
+    const quote = comment.quote?.trim() ?? ''
+    const blockText =
+      quote.length > 0
+        ? quote
+        : sourceLines
+            .slice(comment.line - 1, comment.endLine)
+            .join('\n')
+            .trim()
+    if (blockText.length > 0) {
+      const quoted = blockText.length > 300 ? `${blockText.slice(0, 300)}…` : blockText
+      lines.push(`"${quoted}"`)
     } else {
       lines.push(`Line ${comment.line}`)
     }

@@ -12,6 +12,8 @@ const agent = {
   thinking: 'medium' as const,
   effectiveModel: 'test/model',
   sessionKey: 'reviewer-key',
+  sessionId: '019f9304-4fcc-7587-a285-772db38d479f',
+  sessionPath: '/tmp/reviewer-session.jsonl',
 }
 
 function result(text: string): SubagentRunResult {
@@ -48,12 +50,14 @@ test('inlines finished agent results at the character threshold', () => {
   const text = 'x'.repeat(INLINE_RESULT_MAX_CHARACTERS)
   const lines = formatFinishedAgentResult(agent, '/tmp/reviewer-result.md', result(text), false)
 
-  assert.deepEqual(lines.slice(0, 3), [
+  assert.deepEqual(lines.slice(0, 5), [
     'reviewer (medium, test/model, exit 0): /tmp/reviewer-result.md',
     'sessionKey: reviewer-key',
+    'sessionId: 019f9304-4fcc-7587-a285-772db38d479f',
+    "continue: pi --session '/tmp/reviewer-session.jsonl'",
     'final context: 42k',
   ])
-  assert.deepEqual(lines.slice(3), ['', 'reviewer result:', `    ${text}`])
+  assert.deepEqual(lines.slice(5), ['', 'reviewer result:', `    ${text}`])
 })
 
 test('keeps larger finished agent results path-only', () => {
@@ -64,6 +68,8 @@ test('keeps larger finished agent results path-only', () => {
     [
       'reviewer (medium, test/model, exit 0): /tmp/reviewer-result.md',
       'sessionKey: reviewer-key',
+      'sessionId: 019f9304-4fcc-7587-a285-772db38d479f',
+      "continue: pi --session '/tmp/reviewer-session.jsonl'",
       'final context: 42k',
     ],
   )
@@ -77,7 +83,7 @@ test('indents every line of an inlined result under its agent label', () => {
     false,
   )
 
-  assert.deepEqual(lines.slice(3), [
+  assert.deepEqual(lines.slice(5), [
     '',
     'reviewer result:',
     '    first line',

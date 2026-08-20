@@ -1,6 +1,6 @@
 import extension from './extensions/extension.ts'
 
-export { renderSubagentDetails } from './extensions/display.ts'
+export { renderLiveCompact } from './extensions/display.ts'
 export { startJob } from './extensions/execute-subagents.ts'
 export type {
   ForkOverride,

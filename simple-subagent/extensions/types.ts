@@ -40,11 +40,9 @@ export type PiJsonEvent = {
 }
 
 export type ToolDisplayItem = { name: string; args: Record<string, unknown> }
-export type LiveDisplayEvent = { type: 'tool'; agent: string; tool: ToolDisplayItem }
 export type SubagentStatus = 'queued' | 'running' | 'done' | 'failed' | 'interrupted'
 
 export type SubagentResultDetails = {
-  liveEvents?: LiveDisplayEvent[]
   agents: Array<{
     name: string
     thinking: ThinkingLevel
@@ -53,6 +51,8 @@ export type SubagentResultDetails = {
     prompt?: string
     cwd?: string
     sessionKey?: string
+    sessionId?: string
+    sessionPath?: string
     forkParent?: boolean
     status?: SubagentStatus
     exitCode?: number
@@ -70,6 +70,8 @@ export type AgentDisplayInfo = {
   prompt?: string
   cwd?: string
   sessionKey?: string
+  sessionId?: string
+  sessionPath?: string
   forkParent?: boolean
   status?: SubagentStatus
   usage?: UsageStats

@@ -35,23 +35,14 @@ document.documentElement.style.colorScheme = theme.appearance
 const state = {
   overallComment: '',
   comments: [],
-  wrapLines: true,
 }
-
-let monacoApi = null
-let editor = null
-let model = null
-let decorations = []
-let viewZones = []
-let hoverDecoration = null
 
 const windowTitleEl = document.getElementById('window-title')
 const sourceHintEl = document.getElementById('source-hint')
 const summaryEl = document.getElementById('summary')
-const editorContainerEl = document.getElementById('editor-container')
+const contentEl = document.getElementById('markdown-content')
 const overallCommentButton = document.getElementById('overall-comment-button')
 const copyButton = document.getElementById('copy-button')
-const toggleWrapButton = document.getElementById('toggle-wrap-button')
 const cancelButton = document.getElementById('cancel-button')
 const submitButton = document.getElementById('submit-button')
 
@@ -79,16 +70,8 @@ function hasSubmittableFeedback() {
   )
 }
 
-function selectedText() {
-  if (!editor?.hasTextFocus?.()) return ''
-  const selection = editor.getSelection()
-  const model = editor.getModel()
-  if (!selection || selection.isEmpty() || !model) return ''
-  return model.getValueInRange(selection)
-}
-
 function textToCopy() {
-  return selectedText() || annotateData.text || ''
+  return window.getSelection()?.toString() || annotateData.text || ''
 }
 
 async function copyText(text) {
@@ -110,7 +93,6 @@ async function copyText(text) {
     textarea.select()
     document.execCommand('copy')
     textarea.remove()
-    editor?.focus()
   }
 }
 
@@ -118,120 +100,166 @@ function updateSummary() {
   const filledComments = state.comments.filter(comment => comment.body.trim().length > 0).length
   const drafts = state.comments.length - filledComments
   summaryEl.textContent = `${filledComments} comment(s)${drafts > 0 ? ` • ${drafts} draft(s)` : ''}${state.overallComment ? ' • overall note' : ''}`
-  toggleWrapButton.textContent = `Wrap lines: ${state.wrapLines ? 'on' : 'off'}`
   submitButton.disabled = !hasSubmittableFeedback()
 }
 
-function layoutEditor() {
-  if (!editor) return
-  const width = editorContainerEl.clientWidth
-  const height = editorContainerEl.clientHeight
-  if (width > 0 && height > 0) editor.layout({ width, height })
+function truncate(value, max) {
+  return value.length > max ? `${value.slice(0, max)}…` : value
 }
 
-function clearViewZones() {
-  if (!editor || viewZones.length === 0) return
-  editor.changeViewZones(accessor => {
-    for (const id of viewZones) accessor.removeZone(id)
-  })
-  viewZones = []
-}
-
-function syncCommentBodiesFromDom() {
-  for (const textarea of document.querySelectorAll('textarea[data-comment-id]')) {
-    const comment = state.comments.find(item => item.id === textarea.dataset.commentId)
-    if (comment) comment.body = textarea.value
-  }
-}
-
-function renderCommentDom(comment) {
+function createCommentElement(comment, blockEl) {
   const container = document.createElement('div')
-  container.className = 'view-zone-container'
+  container.className = 'annotate-comment'
+  const lineLabel = comment.quote
+    ? `“${escapeHtml(truncate(comment.quote, 80))}”`
+    : comment.endLine > comment.line
+      ? `Lines ${comment.line}–${comment.endLine}`
+      : `Line ${comment.line}`
   container.innerHTML = `
     <div class="mb-2 flex items-center justify-between gap-3">
-      <div class="text-xs font-semibold text-review-text">Line ${comment.line} • ${escapeHtml(annotateData.sourceLabel || 'latest response')}</div>
+      <div class="min-w-0 truncate text-xs font-semibold text-review-text">${lineLabel} • ${escapeHtml(annotateData.sourceLabel || 'latest response')}</div>
       <button data-action="delete" class="cursor-pointer rounded-md border border-transparent bg-transparent px-2 py-1 text-xs font-medium text-review-muted hover:bg-review-error/10 hover:text-review-error">Delete</button>
     </div>
-    <textarea data-comment-id="${escapeHtml(comment.id)}" rows="2" class="min-h-[44px] w-full resize-y rounded-md border border-review-border bg-review-bg px-3 py-1.5 text-sm text-review-text outline-none focus:border-review-accent focus:ring-1 focus:ring-review-accent" placeholder="Leave a comment"></textarea>
+    <textarea rows="2" class="min-h-[44px] w-full resize-y rounded-md border border-review-border bg-review-bg px-3 py-1.5 text-sm text-review-text outline-none focus:border-review-accent focus:ring-1 focus:ring-review-accent" placeholder="Leave a comment"></textarea>
   `
   const textarea = container.querySelector('textarea')
-  textarea.value = comment.body || ''
   textarea.addEventListener('input', () => {
     comment.body = textarea.value
     updateSummary()
   })
-  container.addEventListener('mousedown', event => event.stopPropagation())
-  container.addEventListener('click', event => event.stopPropagation())
-  container.querySelector("[data-action='delete']").addEventListener('click', event => {
-    event.preventDefault()
-    event.stopPropagation()
+  container.querySelector("[data-action='delete']").addEventListener('click', () => {
     state.comments = state.comments.filter(item => item.id !== comment.id)
-    syncCommentsUi()
+    if (!state.comments.some(item => item.line === comment.line)) {
+      blockEl.classList.remove('has-comment')
+    }
+    container.remove()
+    updateSummary()
   })
-  if (!comment.body) setTimeout(() => textarea.focus(), 50)
   return container
 }
 
-function syncCommentsUi() {
-  syncCommentBodiesFromDom()
-  clearViewZones()
-  if (!(editor && monacoApi)) return
-
-  const sorted = [...state.comments].sort((a, b) => a.line - b.line)
-  decorations = editor.deltaDecorations(
-    decorations,
-    sorted.map(comment => ({
-      range: new monacoApi.Range(comment.line, 1, comment.line, 1),
-      options: {
-        isWholeLine: true,
-        className: 'annotate-comment-line',
-        glyphMarginClassName: 'annotate-comment-glyph',
-        glyphMarginHoverMessage: { value: 'Annotation comment' },
-      },
-    })),
-  )
-
-  editor.changeViewZones(accessor => {
-    for (const comment of sorted) {
-      const domNode = renderCommentDom(comment)
-      const lineCount = Math.max(6, Math.ceil((comment.body || '').length / 80) + 3)
-      viewZones.push(
-        accessor.addZone({
-          afterLineNumber: comment.line,
-          heightInLines: lineCount,
-          domNode,
-          suppressMouseDown: false,
-        }),
-      )
+function addComment(blockEl, quote) {
+  const line = Number(blockEl.dataset.lineStart)
+  if (quote == null) {
+    const existing = state.comments.find(comment => comment.line === line && comment.quote == null)
+    if (existing) {
+      blockEl.nextElementSibling?.querySelector('textarea')?.focus()
+      return
     }
-  })
-  updateSummary()
-  requestAnimationFrame(layoutEditor)
-}
-
-function focusComment(commentId) {
-  setTimeout(() => {
-    document.querySelector(`textarea[data-comment-id="${CSS.escape(commentId)}"]`)?.focus()
-  }, 50)
-}
-
-function addComment(line) {
-  syncCommentBodiesFromDom()
-  const existing = state.comments.find(comment => comment.line === line)
-  if (existing) {
-    syncCommentsUi()
-    focusComment(existing.id)
-    return
   }
 
   const comment = {
     id: `${Date.now()}:${Math.random().toString(16).slice(2)}`,
     line,
+    endLine: Number(blockEl.dataset.lineEnd),
+    quote,
     body: '',
   }
   state.comments.push(comment)
-  syncCommentsUi()
-  focusComment(comment.id)
+  const commentEl = createCommentElement(comment, blockEl)
+  blockEl.classList.add('has-comment')
+  let anchor = blockEl
+  while (anchor.nextElementSibling?.classList.contains('annotate-comment')) {
+    anchor = anchor.nextElementSibling
+  }
+  anchor.after(commentEl)
+  updateSummary()
+  setTimeout(() => commentEl.querySelector('textarea').focus(), 50)
+}
+
+const selectionButton = document.createElement('button')
+selectionButton.className = 'selection-comment-button'
+selectionButton.textContent = 'Comment'
+selectionButton.hidden = true
+document.body.appendChild(selectionButton)
+let pendingSelection = null
+
+function blockForSelection(selection) {
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null
+  const node = selection.getRangeAt(0).commonAncestorContainer
+  const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement
+  return element?.closest('.md-block') ?? null
+}
+
+document.addEventListener('mouseup', event => {
+  if (event.target === selectionButton) return
+  setTimeout(() => {
+    const selection = window.getSelection()
+    const blockEl = blockForSelection(selection)
+    const quote = selection?.toString().trim()
+    if (!blockEl || !quote) {
+      selectionButton.hidden = true
+      pendingSelection = null
+      return
+    }
+    const rect = selection.getRangeAt(0).getBoundingClientRect()
+    selectionButton.style.left = `${Math.max(8, Math.min(rect.right, window.innerWidth - 110))}px`
+    selectionButton.style.top = `${Math.min(rect.bottom + 8, window.innerHeight - 40)}px`
+    pendingSelection = { blockEl, quote }
+    selectionButton.hidden = false
+  })
+})
+
+selectionButton.addEventListener('mousedown', event => event.preventDefault())
+selectionButton.addEventListener('click', () => {
+  if (!pendingSelection) return
+  const { blockEl, quote } = pendingSelection
+  pendingSelection = null
+  selectionButton.hidden = true
+  window.getSelection()?.removeAllRanges()
+  addComment(blockEl, quote)
+})
+
+document.addEventListener(
+  'scroll',
+  () => {
+    selectionButton.hidden = true
+  },
+  true,
+)
+
+function groupTopLevelBlocks(tokens) {
+  const blocks = []
+  let index = 0
+  while (index < tokens.length) {
+    const start = index
+    if (tokens[index].nesting === 1) {
+      let depth = 0
+      do {
+        depth += tokens[index].nesting
+        index++
+      } while (depth > 0 && index < tokens.length)
+    } else {
+      index++
+    }
+    blocks.push(tokens.slice(start, index))
+  }
+  return blocks
+}
+
+function renderMarkdown() {
+  if (!window.markdownit) throw new Error('markdown-it unavailable.')
+  const md = window.markdownit({ linkify: true })
+  const blocks = groupTopLevelBlocks(md.parse(annotateData.text || '', {}))
+
+  for (const blockTokens of blocks) {
+    const map = blockTokens[0].map
+    if (!map) continue
+    const wrapper = document.createElement('div')
+    wrapper.className = 'md-block'
+    wrapper.dataset.lineStart = String(map[0] + 1)
+    wrapper.dataset.lineEnd = String(map[1])
+    wrapper.innerHTML = md.renderer.render(blockTokens, md.options, {})
+
+    const addButton = document.createElement('button')
+    addButton.className = 'md-block-add'
+    addButton.title = 'Add comment'
+    addButton.textContent = '+'
+    addButton.addEventListener('click', () => addComment(wrapper, null))
+    wrapper.prepend(addButton)
+
+    contentEl.appendChild(wrapper)
+  }
 }
 
 function showTextModal(options) {
@@ -267,83 +295,7 @@ function failRenderer(message) {
   window.glimpse?.send({ type: 'renderer-error', message })
 }
 
-function initializeMonaco() {
-  try {
-    if (!window.require) throw new Error('Monaco loader unavailable.')
-    window.require.config({
-      paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.2/min/vs' },
-    })
-    window.require(['vs/editor/editor.main'], () => {
-      try {
-        monacoApi = window.monaco
-        monacoApi.editor.defineTheme('annotate-glimpse', {
-          base: theme.appearance === 'light' ? 'vs' : 'vs-dark',
-          inherit: true,
-          rules: [],
-          colors: {
-            'editor.background': theme.bg,
-            'editor.foreground': theme.text,
-            'editorLineNumber.foreground': theme.dim,
-            'editorLineNumber.activeForeground': theme.accent,
-            'editor.selectionBackground': `${theme.accent}33`,
-          },
-        })
-        monacoApi.editor.setTheme('annotate-glimpse')
-        model = monacoApi.editor.createModel(annotateData.text || '', 'markdown')
-        editor = monacoApi.editor.create(editorContainerEl, {
-          model,
-          readOnly: true,
-          minimap: { enabled: false },
-          automaticLayout: true,
-          glyphMargin: true,
-          lineNumbers: 'on',
-          lineDecorationsWidth: 16,
-          scrollBeyondLastLine: false,
-          wordWrap: state.wrapLines ? 'on' : 'off',
-          wrappingIndent: 'same',
-          renderWhitespace: 'selection',
-        })
-        editor.onMouseMove(event => {
-          if (
-            !event.target?.position ||
-            event.target.type !== monacoApi.editor.MouseTargetType.GUTTER_LINE_NUMBERS
-          ) {
-            hoverDecoration = editor.deltaDecorations(hoverDecoration || [], [])
-            return
-          }
-          hoverDecoration = editor.deltaDecorations(hoverDecoration || [], [
-            {
-              range: new monacoApi.Range(
-                event.target.position.lineNumber,
-                1,
-                event.target.position.lineNumber,
-                1,
-              ),
-              options: { glyphMarginClassName: 'annotate-glyph-plus' },
-            },
-          ])
-        })
-        editor.onMouseDown(event => {
-          if (!event.target?.position) return
-          if (
-            event.target.type === monacoApi.editor.MouseTargetType.GUTTER_GLYPH_MARGIN ||
-            event.target.type === monacoApi.editor.MouseTargetType.GUTTER_LINE_NUMBERS
-          ) {
-            addComment(event.target.position.lineNumber)
-          }
-        })
-        updateSummary()
-      } catch (error) {
-        failRenderer(error?.message || String(error))
-      }
-    })
-  } catch (error) {
-    failRenderer(error?.message || String(error))
-  }
-}
-
 submitButton.addEventListener('click', () => {
-  syncCommentBodiesFromDom()
   if (!hasSubmittableFeedback()) return
 
   window.glimpse.send({
@@ -378,12 +330,9 @@ overallCommentButton.addEventListener('click', () => {
   })
 })
 
-toggleWrapButton.addEventListener('click', () => {
-  state.wrapLines = !state.wrapLines
-  if (editor) editor.updateOptions({ wordWrap: state.wrapLines ? 'on' : 'off' })
+try {
+  renderMarkdown()
   updateSummary()
-  requestAnimationFrame(layoutEditor)
-})
-
-window.addEventListener('resize', layoutEditor)
-initializeMonaco()
+} catch (error) {
+  failRenderer(error?.message || String(error))
+}

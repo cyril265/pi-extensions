@@ -5,9 +5,9 @@ import type {
   AgentDisplayInfo,
   SubagentResultDetails,
   SubagentStatus,
-  ToolDisplayItem,
   UsageStats,
 } from './types.ts'
+import { formatPiSessionCommand } from './sessions.ts'
 import { formatCompactUsageStats, sumUsageStats } from './usage.ts'
 
 function truncate(text: string, max = 80): string {
@@ -287,7 +287,13 @@ export function renderLiveCompact(
       const usage = agent.usage
         ? `${theme.fg('muted', ' · ')}${theme.fg('dim', formatCompactUsageStats(agent.usage))}`
         : ''
-      return `${prefix} ${renderAgentIdentity(agent, theme)}${usage}`
+      const continuation =
+        agent.sessionId &&
+        agent.sessionPath &&
+        (status === 'done' || status === 'failed' || status === 'interrupted')
+          ? `\n  ${theme.fg('dim', `session ${agent.sessionId}`)}\n  ${theme.fg('dim', formatPiSessionCommand(agent.sessionPath))}`
+          : ''
+      return `${prefix} ${renderAgentIdentity(agent, theme)}${usage}${continuation}`
     })
     .join('\n')}`
   const agentsWithUsage = agents.filter(
@@ -297,62 +303,4 @@ export function renderLiveCompact(
     text += `\n${theme.fg('dim', `total · ${formatCompactUsageStats(sumUsageStats(agentsWithUsage.map(agent => agent.usage)))}`)}`
   }
   return text
-}
-
-export function renderSubagentDetails(
-  details: SubagentResultDetails,
-  expanded: boolean,
-  theme: Theme,
-  title = 'runSubAgents',
-): string {
-  if (!details.liveEvents?.length) return renderLiveCompact(details.agents, theme, title)
-
-  const eventLimit = expanded ? undefined : 30
-  const events = eventLimit ? details.liveEvents.slice(-eventLimit) : details.liveEvents
-  const lines = [renderLiveCompact(details.agents, theme, title), '']
-  if (eventLimit && details.liveEvents.length > eventLimit) {
-    lines.push(
-      theme.fg('muted', `... ${details.liveEvents.length - eventLimit} earlier tool calls`),
-    )
-  }
-
-  let previousAgent = ''
-  let toolGroup: { agent: string; name: string; tools: ToolDisplayItem[] } | undefined
-  const flushToolGroup = () => {
-    if (!toolGroup) return
-    const displayName = getToolDisplayName(toolGroup.name)
-    if (toolGroup.tools.length === 1) {
-      const tool = toolGroup.tools[0]
-      lines.push(
-        `  ${theme.fg('muted', '└')} ${theme.fg('muted', displayName)} ${formatToolTarget(tool.name, tool.args, theme)}`,
-      )
-    } else {
-      lines.push(`  ${theme.fg('muted', '└')} ${theme.fg('muted', displayName)}`)
-      for (const tool of toolGroup.tools) {
-        lines.push(`    ${theme.fg('muted', '-')} ${formatToolTarget(tool.name, tool.args, theme)}`)
-      }
-    }
-    toolGroup = undefined
-  }
-
-  for (const event of events) {
-    if (event.agent !== previousAgent) {
-      flushToolGroup()
-      if (previousAgent) lines.push('')
-      lines.push(theme.fg('text', event.agent))
-      previousAgent = event.agent
-    }
-    if (toolGroup && toolGroup.agent === event.agent && toolGroup.name === event.tool.name) {
-      toolGroup.tools.push(event.tool)
-    } else {
-      flushToolGroup()
-      toolGroup = {
-        agent: event.agent,
-        name: event.tool.name,
-        tools: [event.tool],
-      }
-    }
-  }
-  flushToolGroup()
-  return lines.join('\n')
 }
