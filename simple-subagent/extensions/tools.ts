@@ -43,6 +43,11 @@ type SubagentDispatchDetails = {
   agents: Array<{ name: string; sessionKey: string }>
 }
 
+export type RegisteredSubagentTools = {
+  runSubAgentsTool: ToolDefinition<any, SubagentDispatchDetails>
+  collectSubagentsTool: ToolDefinition<any, SubagentResultDetails | undefined>
+}
+
 function getMessageText(content: string | Array<{ type: string; text?: string }>): string {
   if (typeof content === 'string') return content
   return content
@@ -113,13 +118,18 @@ export function registerSubagentTools(
   pi: ExtensionAPI,
   isSubagentProcess: boolean,
   config: SimpleSubagentConfig,
-) {
+): RegisteredSubagentTools {
   const pendingForkJobs: PendingForkJob[] = []
   const jobContexts = new Map<string, ExtensionContext>()
   const widgetDetails = new Map<string, SubagentResultDetails>()
   const widgetJobs = new Set<string>()
   const widgetRenders = new Map<string, () => void>()
   let subagentToolsUnlocked = !isSubagentProcess
+  const assertSubagentToolsAvailable = () => {
+    if (!subagentToolsUnlocked) {
+      throw new Error('Subagent tools are unavailable during this run')
+    }
+  }
   const jobs = new JobRegistry({
     onProgress(job, details) {
       const ctx = jobContexts.get(job.id)
@@ -305,9 +315,7 @@ export function registerSubagentTools(
       return new Text(formatResultText(getMessageText(result.content), theme), 0, 0)
     },
     async execute(_toolCallId, params, signal) {
-      if (!subagentToolsUnlocked) {
-        throw new Error('Subagent tools are unavailable during this run')
-      }
+      assertSubagentToolsAvailable()
       const result = await jobs.collect(params.jobId, signal)
       if (!result) {
         return {
@@ -383,9 +391,7 @@ export function registerSubagentTools(
       )
     },
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-      if (!subagentToolsUnlocked) {
-        throw new Error('Subagent tools are unavailable during this run')
-      }
+      assertSubagentToolsAvailable()
       if (params.agents.length === 0) throw new Error('No agents')
       if (!ctx.model) throw new Error('Parent context has no caller model')
       const agents = params.agents.map(agent => ({
@@ -551,4 +557,6 @@ export function registerSubagentTools(
     widgetRenders.clear()
     jobContexts.clear()
   })
+
+  return { runSubAgentsTool, collectSubagentsTool }
 }

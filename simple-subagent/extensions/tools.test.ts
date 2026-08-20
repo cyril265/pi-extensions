@@ -35,7 +35,7 @@ test('lists configured aliases only in the isolated subagent tool description', 
     },
   } as unknown as ExtensionAPI
 
-  registerSubagentTools(pi, false, {
+  const registered = registerSubagentTools(pi, false, {
     enableForkTool: true,
     modelAliases: {
       opus: 'anthropic/claude-opus-5',
@@ -46,6 +46,8 @@ test('lists configured aliases only in the isolated subagent tool description', 
 
   assert.match(tools[0].description, /options opus, codex/)
   assert.doesNotMatch(tools[1].description, /options opus, codex/)
+  assert.equal(registered.runSubAgentsTool, tools[0])
+  assert.equal(registered.collectSubagentsTool, tools[1])
 })
 
 test('locks subagent tools only for managed process startup', () => {

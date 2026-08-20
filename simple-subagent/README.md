@@ -5,6 +5,7 @@ Pi extension for asynchronous subagents:
 - `runSubAgents({ agents: [...] })` dispatches isolated agents and immediately returns an 8-character job ID and session keys
 - `collectSubagents({ jobId })` waits for results not already delivered
 - `runSubAgentsWithContext({ agents: [...] })` asynchronously forks the parent context; disabled by default
+- `nodeScript({ code })` runs trusted one-shot JavaScript that composes Pi's stock tools and isolated subagents
 - `/subagents` opens a running-job picker with cancellation; `/subagents cancel <jobId>` is the scriptable path
 
 When a job settles, uncollected results are pushed into the parent conversation. Pi queues the
@@ -103,6 +104,88 @@ The projection ends when the server exits or the companion plugin is disabled or
 - results of 2048 characters or fewer are inlined alongside the result path
 - `cwd`: working directory for child pi run
 
+## nodeScript
+
+`nodeScript` runs its `code` as an async JavaScript function body in a fresh worker. The worker
+has a frozen `tools` object and a captured `console` object. It has no Pi imports or persistent
+state. The tool call always displays the complete script with JavaScript syntax highlighting.
+The result starts with one status and timing line, renders console output in muted text, and
+syntax-highlights JSON returns. It shows at most ten return-value lines until expanded; status and
+console lines do not count toward that limit.
+
+The `tools` object exposes exactly these methods:
+
+```text
+read
+write
+edit
+bash
+grep
+find
+ls
+runSubAgents
+collectSubagents
+```
+
+Every successful call resolves to:
+
+```ts
+{
+  text: string
+  content: Array<TextContent | ImageContent>
+  details: unknown
+}
+```
+
+Validation and execution failures reject the call, so scripts can use normal `try/catch`.
+Calls can run sequentially or through `Promise.all`.
+
+```js
+const template = await tools.read({ path: "/absolute/path/to/reviewer.md" })
+const diff = await tools.bash({ command: "git diff main...HEAD" })
+const prompt = `${template.text}\n\n${diff.text}`
+
+return tools.runSubAgents({
+  agents: [
+    {
+      name: "correctness",
+      thinking: "high",
+      cwd: "/absolute/path/to/project",
+      prompt,
+    },
+    {
+      name: "simplicity",
+      thinking: "high",
+      cwd: "/absolute/path/to/project",
+      prompt,
+    },
+  ],
+})
+```
+
+Strings returned by the script stay unchanged. Other JSON-serializable values are formatted as
+indented JSON. Omitting a return or returning `undefined` fails. Captured console lines appear
+before the returned value. Combined output is limited to 2000 lines or 50KB. When it exceeds
+either limit, the result includes the path to a temporary file containing the complete output.
+
+`nodeScript` is not a security sandbox. Run only code you trust. Nested native calls use Pi's stock
+implementations with the parent `cwd` and effective image and shell settings. They do not use
+active or overridden tool instances. They also bypass active-tool restrictions, permission
+extensions, and nested `tool_call` or `tool_result` hooks. The outer `nodeScript` call still uses
+Pi's normal tool lifecycle.
+
+Pressing Escape terminates the worker and aborts active native calls. A waiting
+`collectSubagents` call is removed, but dispatched subagent jobs keep running. Session shutdown
+also terminates workers, then applies simple-subagent's existing behavior of cancelling all jobs.
+If a script returns while one of its tool promises is unresolved, `nodeScript` aborts those calls
+and fails.
+
+Collection keeps the existing winner-takes-result behavior. A collector that is waiting first gets
+the result. If push delivery wins first, a later collect reports that no undelivered result remains.
+`runSubAgentsWithContext`, extension tools, and MCP tools are not available inside `nodeScript`.
+
+## Isolated subagent behavior
+
 Each agent runs in a separate `pi` process in JSON/print mode. Dispatch does not wait for it.
 In parent print or JSON single-shot mode, Pi holds the process open at `turn_end` until all jobs settle.
 
@@ -114,11 +197,12 @@ in the workspace are closed while active panes remain. Workspace setup uses a ke
 that is released if the launcher crashes.
 
 During its parent-assigned run, a subagent cannot call `runSubAgents`, `collectSubagents`, or
-`runSubAgentsWithContext`. Once that run settles, those tools become available in the retained
-Herdr pane for normal interactive continuation. Their schemas remain active while execution is
-locked so the provider prompt-cache prefix does not change at settlement; the assigned prompt
-instructs the agent not to call them. Reusing a session key starts the next parent-assigned run
-locked again without changing session reuse behavior.
+`runSubAgentsWithContext`. `nodeScript` remains available, but its nested `runSubAgents` and
+`collectSubagents` calls hit the same lock. Once the run settles, the subagent tools become
+available in the retained Herdr pane for normal interactive continuation. Their schemas remain
+active while execution is locked so the provider prompt-cache prefix does not change at
+settlement; the assigned prompt instructs the agent not to call them. Reusing a session key starts
+the next parent-assigned run locked again without changing session reuse behavior.
 
 If Herdr setup fails before any subagent pane starts (projection setup, pane discovery, or tab
 creation), the tool falls back to child-process mode and includes the Herdr reason as a warning.
@@ -137,7 +221,7 @@ scroll are supported.
 A completed pane counts as Unseen until you open it: opening a pane marks it Viewed, and it
 then shows as Viewed instead of Done and drops out of the Unseen filter.
 
-Session behavior:
+### Session behavior
 
 - omit `sessionKey`: a durable key such as `auth-review-K7m4P2qX` is generated and returned
 - set `sessionKey`: reuse that child session
@@ -155,7 +239,7 @@ Result markdown files are still written to a temporary run directory; only the p
 
 Managed sessions are included in pi's global `/resume` scan.
 
-Fork behavior:
+## Fork behavior
 
 Enable the separate fork tool with `enableForkTool` in `~/.pi/agent/simple-subagent.json`.
 

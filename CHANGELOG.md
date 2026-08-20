@@ -2,6 +2,18 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-08-20 20:48
+
+### simple-subagent
+
+- Added `nodeScript`, a trusted one-shot JavaScript worker for composing Pi's stock file and shell tools with isolated subagent dispatch and collection.
+- Rendered the complete `nodeScript` source with JavaScript syntax highlighting.
+- Split console and return-value rendering, syntax-highlighted JSON results, and limited collapsed return values to ten visual lines without counting status or console lines.
+- Allowed managed subagents to use `nodeScript` while keeping nested subagent dispatch and collection locked during parent-assigned runs.
+- Added concurrent nested calls, cancellation and shutdown cleanup, call traces, and 50KB or 2000-line combined-output truncation with full output saved to a temporary file.
+- Documented the required script return value, captured console behavior, and unavailable Node globals in the tool schema.
+- Aligned the Pi development dependencies with version 0.84.2.
+
 ## 2026-08-17 10:00
 
 ### simple-subagent
