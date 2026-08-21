@@ -32,6 +32,10 @@ export function getPiInvocation(args: string[]): { command: string; args: string
   }
 }
 
+export function getProcessExitCode(code: number | null): number {
+  return code ?? 1
+}
+
 async function runPiJsonProcess(
   args: string[],
   cwd: string,
@@ -93,9 +97,12 @@ async function runPiJsonProcess(
       finish(1)
     })
 
-    proc.on('close', code => {
+    proc.on('close', (code, terminationSignal) => {
       if (buffer.trim()) processLine(buffer)
-      finish(code ?? 0)
+      if (terminationSignal) {
+        stderr += `${stderr ? '\n' : ''}Subagent process terminated by ${terminationSignal}`
+      }
+      finish(getProcessExitCode(code))
     })
 
     if (signal) {

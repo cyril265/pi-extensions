@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { Message } from '@earendil-works/pi-ai'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { writePrivateFile } from './private-files.ts'
 import {
   cloneToolArgs,
   dedupeToolDisplayItems,
@@ -21,9 +22,10 @@ type HerdrBridgeResult = { ok: true; result: SubagentRunResult } | { ok: false; 
 
 function writeAtomic(filePath: string, value: HerdrBridgeResult): void {
   if (fs.existsSync(filePath)) return
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
+  fs.chmodSync(path.dirname(filePath), 0o700)
   const temporaryPath = `${filePath}.${process.pid}.tmp`
-  fs.writeFileSync(temporaryPath, `${JSON.stringify(value)}\n`, { flag: 'wx' })
+  writePrivateFile(temporaryPath, `${JSON.stringify(value)}\n`, 'wx')
   try {
     fs.renameSync(temporaryPath, filePath)
   } catch (error) {

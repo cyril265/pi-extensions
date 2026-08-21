@@ -16,17 +16,18 @@ import {
   type SubagentJobResult,
 } from './jobs.ts'
 import { resolveEffectiveModel } from './model.ts'
+import { writePrivateFile } from './private-files.ts'
 import {
   createForkedSession,
   createRunDirectory,
   ensureUniqueForkSessionId,
   findForkLeafId,
   formatPiSessionCommand,
+  getAgentResultPath,
   getSubagentSessionPath,
   readForkMetadata,
   readSubagentSessionId,
   resolveSubagentSessionKey,
-  sanitizeFileName,
   writeForkMetadata,
 } from './sessions.ts'
 import { cloneToolArgs } from './tool-events.ts'
@@ -346,6 +347,21 @@ export function startJob(
         liveAgents[index].tools.push(tool)
         emitLiveUpdate()
       }
+      const finishAgent = (index: number, result: SubagentRunResult) => {
+        const agent = preparedAgents[index]
+        const outputPath = getAgentResultPath(runDirectory, agent.name, index)
+        writePrivateFile(outputPath, result.text)
+        const sessionId = readSubagentSessionId(agent.sessionPath)
+        if (!sessionId) throw new Error(`Subagent "${agent.name}" created no Pi session`)
+        Object.assign(liveAgents[index], {
+          exitCode: result.exitCode,
+          outputPath,
+          sessionId,
+          usage: result.usage,
+        })
+        emitLiveUpdate()
+        return { index, outputPath, result, sessionId }
+      }
 
       emitLiveUpdate()
       let results: Array<{
@@ -364,7 +380,7 @@ export function startJob(
         try {
           const parentLabel =
             ctx.sessionManager.getSessionName() ||
-            (await getHerdrParentLabel(path.basename(ctx.cwd), ctx.cwd))
+            (await getHerdrParentLabel(path.basename(ctx.cwd), ctx.cwd, signal))
           herdrRunStarted = true
           const herdrOutcomes = await runSubagentsInHerdr(
             preparedAgents.map(agent => ({
@@ -391,22 +407,10 @@ export function startJob(
               return []
             }
             const { index, result } = outcome
-            const agent = preparedAgents[index]
-            const outputPath = path.join(
-              runDirectory,
-              `${sanitizeFileName(agent.name)}-result.md`,
-            )
-            fs.writeFileSync(outputPath, result.text)
-            const sessionId = readSubagentSessionId(agent.sessionPath)
-            if (!sessionId) throw new Error(`Subagent "${agent.name}" created no Pi session`)
-            liveAgents[index].exitCode = result.exitCode
-            liveAgents[index].outputPath = outputPath
-            liveAgents[index].sessionId = sessionId
-            liveAgents[index].usage = result.usage
-            emitLiveUpdate()
-            return [{ index, outputPath, result, sessionId }]
+            return [finishAgent(index, result)]
           })
         } catch (error) {
+          if (signal.aborted) throw error
           if (herdrRunStarted && !(error instanceof HerdrInitializationError)) throw error
           herdrWarning = errorText(error)
           runInChildProcesses = true
@@ -429,20 +433,8 @@ export function startJob(
                 signal,
                 tool => emitAgentTool(index, tool),
               )
-              const outputPath = path.join(
-                runDirectory,
-                `${sanitizeFileName(agent.name)}-result.md`,
-              )
-              fs.writeFileSync(outputPath, result.text)
-              const sessionId = readSubagentSessionId(agent.sessionPath)
-              if (!sessionId) throw new Error(`Subagent "${agent.name}" created no Pi session`)
               liveAgents[index].status = result.exitCode === 0 ? 'done' : 'failed'
-              liveAgents[index].exitCode = result.exitCode
-              liveAgents[index].outputPath = outputPath
-              liveAgents[index].sessionId = sessionId
-              liveAgents[index].usage = result.usage
-              emitLiveUpdate()
-              return { index, outputPath, result, sessionId }
+              return finishAgent(index, result)
             } catch (error) {
               liveAgents[index].status = signal.aborted ? 'interrupted' : 'failed'
               liveAgents[index].sessionId = readSubagentSessionId(agent.sessionPath)

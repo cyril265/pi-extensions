@@ -21,7 +21,7 @@ import {
   type SubagentJobKind,
   type SubagentJobResult,
 } from './jobs.ts'
-import { resolveSubagentSessionKey } from './sessions.ts'
+import { getSubagentSessionPath, resolveSubagentSessionKey } from './sessions.ts'
 import type { SubagentRequest, SubagentResultDetails, ThinkingLevel } from './types.ts'
 
 const SIMPLE_SUBAGENT_FORK_TOOL_ENV = 'PI_SIMPLE_SUBAGENT_FORK_TOOL'
@@ -114,12 +114,29 @@ export function shouldLockSubagentTools(
   return isSubagentProcess && sessionStartReason === 'startup'
 }
 
+export function reserveSessionPaths(activePaths: Set<string>, paths: string[]): () => void {
+  const reserved = new Set<string>()
+  for (const sessionPath of paths) {
+    if (activePaths.has(sessionPath) || reserved.has(sessionPath)) {
+      throw new Error(`Subagent session is already running: ${sessionPath}`)
+    }
+    reserved.add(sessionPath)
+  }
+  for (const sessionPath of reserved) activePaths.add(sessionPath)
+
+  return () => {
+    for (const sessionPath of reserved) activePaths.delete(sessionPath)
+  }
+}
+
 export function registerSubagentTools(
   pi: ExtensionAPI,
   isSubagentProcess: boolean,
   config: SimpleSubagentConfig,
 ): RegisteredSubagentTools {
   const pendingForkJobs: PendingForkJob[] = []
+  const activeSessionPaths = new Set<string>()
+  const releaseSessionPaths = new Map<string, () => void>()
   const jobContexts = new Map<string, ExtensionContext>()
   const widgetDetails = new Map<string, SubagentResultDetails>()
   const widgetJobs = new Set<string>()
@@ -171,6 +188,8 @@ export function registerSubagentTools(
       })
     },
     onSettled(job) {
+      releaseSessionPaths.get(job.id)?.()
+      releaseSessionPaths.delete(job.id)
       const ctx = jobContexts.get(job.id)
       if (ctx?.mode === 'tui') ctx.ui.setWidget(`simple-subagent-${job.id}`, undefined)
       widgetDetails.delete(job.id)
@@ -194,6 +213,9 @@ export function registerSubagentTools(
         },
         getPushOptions(isIdle),
       )
+    },
+    onDelivered(job) {
+      jobContexts.delete(job.id)
     },
   })
 
@@ -247,7 +269,18 @@ export function registerSubagentTools(
       )
     },
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-      const jobId = createJobId(id => !!jobs.get(id))
+      const jobId = createJobId(id => jobs.has(id))
+      const agents = params.agents.map(agent => ({
+        ...agent,
+        sessionKey: resolveSubagentSessionKey(agent.cwd, agent.name, agent.sessionKey),
+      }))
+      releaseSessionPaths.set(
+        jobId,
+        reserveSessionPaths(
+          activeSessionPaths,
+          agents.map(agent => getSubagentSessionPath(agent.cwd, agent.sessionKey)),
+        ),
+      )
       jobContexts.set(jobId, ctx)
       try {
         const job = startJob(
@@ -258,7 +291,7 @@ export function registerSubagentTools(
           subagentToolsUnlocked,
           config.modelAliases,
           toolCallId,
-          params.agents as SubagentRequest[],
+          agents as SubagentRequest[],
           ctx,
         )
         return {
@@ -281,6 +314,8 @@ export function registerSubagentTools(
           },
         }
       } catch (error) {
+        releaseSessionPaths.get(jobId)?.()
+        releaseSessionPaths.delete(jobId)
         jobContexts.delete(jobId)
         throw error
       }
@@ -402,19 +437,33 @@ export function registerSubagentTools(
       if (new Set(agents.map(agent => agent.sessionKey)).size !== agents.length) {
         throw new Error('Duplicate subagent sessionKey for same cwd in one parallel run')
       }
-      const jobId = createJobId(id => !!jobs.get(id))
+      const jobId = createJobId(id => jobs.has(id))
       const details = createScheduledDetails(
         agents,
         ctx,
         pi.getThinkingLevel() as ThinkingLevel,
       )
-      jobContexts.set(jobId, ctx)
-      jobs.reserve(
+      releaseSessionPaths.set(
         jobId,
-        'fork',
-        agents.map(agent => ({ name: agent.name, sessionKey: agent.sessionKey })),
-        (error, aborted) => createForkFailureResult(details, error, aborted),
+        reserveSessionPaths(
+          activeSessionPaths,
+          agents.map(agent => getSubagentSessionPath(ctx.cwd, agent.sessionKey)),
+        ),
       )
+      jobContexts.set(jobId, ctx)
+      try {
+        jobs.reserve(
+          jobId,
+          'fork',
+          agents.map(agent => ({ name: agent.name, sessionKey: agent.sessionKey })),
+          (error, aborted) => createForkFailureResult(details, error, aborted),
+        )
+      } catch (error) {
+        releaseSessionPaths.get(jobId)?.()
+        releaseSessionPaths.delete(jobId)
+        jobContexts.delete(jobId)
+        throw error
+      }
       pendingForkJobs.push({ jobId, toolCallId, agents })
       return {
         content: [

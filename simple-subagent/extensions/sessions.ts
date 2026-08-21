@@ -22,7 +22,8 @@ export function createRunDirectory(): string {
   for (let attempt = 0; attempt < 10; attempt++) {
     const runDirectory = path.join(os.tmpdir(), getRandomId())
     try {
-      fs.mkdirSync(runDirectory)
+      fs.mkdirSync(runDirectory, { mode: 0o700 })
+      fs.chmodSync(runDirectory, 0o700)
       return runDirectory
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
@@ -38,6 +39,10 @@ export function sanitizeFileName(name: string): string {
     .replace(/^-+|-+$/g, '')
   if (!sanitized) throw new Error('Agent name is empty after sanitizing')
   return sanitized
+}
+
+export function getAgentResultPath(runDirectory: string, agentName: string, index: number): string {
+  return path.join(runDirectory, `${sanitizeFileName(agentName)}-${index}-result.md`)
 }
 
 export function resolveSubagentSessionKey(

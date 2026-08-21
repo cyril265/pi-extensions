@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import test from 'node:test'
 import { getPackageDir } from '@earendil-works/pi-coding-agent'
-import { getPiInvocation } from './child-process.ts'
+import { getPiInvocation, getProcessExitCode } from './child-process.ts'
 
 test('uses the installed Pi CLI entrypoint instead of the SDK host entrypoint', () => {
   const piCli = path.join(getPackageDir(), 'dist', 'cli.js')
@@ -14,4 +14,10 @@ test('uses the installed Pi CLI entrypoint instead of the SDK host entrypoint', 
     command: process.execPath,
     args: [piCli, ...args],
   })
+})
+
+test('treats signal termination as a failed exit', () => {
+  assert.equal(getProcessExitCode(null), 1)
+  assert.equal(getProcessExitCode(0), 0)
+  assert.equal(getProcessExitCode(2), 2)
 })

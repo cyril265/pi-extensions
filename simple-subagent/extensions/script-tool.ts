@@ -16,7 +16,6 @@ import {
   createReadToolDefinition,
   createWriteToolDefinition,
   DEFAULT_MAX_BYTES,
-  DEFAULT_MAX_LINES,
   formatSize,
   highlightCode,
   type ExtensionAPI,
@@ -415,8 +414,9 @@ export function registerNodeScriptTool(
   pi.registerTool({
     name: 'nodeScript',
     label: 'nodeScript',
-    description: `Run trusted, one-shot JavaScript that composes read, write, edit, bash, grep, find, ls, runSubAgents, and collectSubagents. The script receives JavaScript intrinsics, frozen tools, and a captured console. Node globals such as process, require, fetch, timers, and Buffer are unavailable; use tools.bash when needed. Tool calls resolve to { text, content, details } and reject on failure. Nested calls use stock Pi tools and share the parent cwd. Combined output is truncated to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)} with the full output saved to a temporary file.`,
-    promptSnippet: 'Compose stock tools and isolated subagents in trusted JavaScript',
+    description:
+      'Run js calling read, write, edit, bash, grep, find, ls, runSubAgents, and collectSubagents when code must pass tool results between calls or fan out subagents. Calls resolve to { text, content, details } and reject on failure. No Node globals; Use bash, direct or parallel tools otherwise.',
+    promptSnippet: 'compose tool calls with runSubAgents',
     parameters,
     renderCall(args, theme) {
       return new Text(

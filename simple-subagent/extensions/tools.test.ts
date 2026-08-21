@@ -4,8 +4,22 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import {
   parseStringifiedAgents,
   registerSubagentTools,
+  reserveSessionPaths,
   shouldLockSubagentTools,
 } from './tools.ts'
+
+test('rejects concurrent session reuse and allows sequential reuse', () => {
+  const activePaths = new Set<string>()
+  const release = reserveSessionPaths(activePaths, ['/tmp/shared-session.jsonl'])
+
+  assert.throws(
+    () => reserveSessionPaths(activePaths, ['/tmp/shared-session.jsonl']),
+    /Subagent session is already running/,
+  )
+
+  release()
+  reserveSessionPaths(activePaths, ['/tmp/shared-session.jsonl'])()
+})
 
 test('parses agents when a schema-less provider path delivers them as a JSON string', () => {
   const agents = [{ thinking: 'medium', name: 'a', prompt: 'p', cwd: '/tmp' }]

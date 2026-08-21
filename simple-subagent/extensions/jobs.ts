@@ -36,7 +36,7 @@ type Collector = {
 type InternalJob = SubagentJob & {
   started: boolean
   settled: boolean
-  failureResult: (error: unknown, aborted: boolean) => SubagentJobResult
+  failureResult: ((error: unknown, aborted: boolean) => SubagentJobResult) | undefined
   resolveSettle: () => void
   collectors: Collector[]
 }
@@ -45,6 +45,7 @@ type JobRegistryEvents = {
   onProgress?: (job: SubagentJob, details: SubagentResultDetails) => void
   onSettled?: (job: SubagentJob, result: SubagentJobResult) => void
   onPush?: (job: SubagentJob, result: SubagentJobResult) => void
+  onDelivered?: (job: SubagentJob) => void
 }
 
 type StartJobInput = {
@@ -75,6 +76,7 @@ export function createJobId(
 
 export class JobRegistry {
   private readonly jobs = new Map<string, InternalJob>()
+  private readonly deliveredJobIds = new Set<string>()
   private readonly events: JobRegistryEvents
   private suppressDelivery = false
 
@@ -88,7 +90,7 @@ export class JobRegistry {
     agents: Array<{ name: string; sessionKey: string }>,
     failureResult: (error: unknown, aborted: boolean) => SubagentJobResult,
   ): SubagentJob {
-    if (this.jobs.has(id)) throw new Error(`Subagent job already exists: ${id}`)
+    if (this.has(id)) throw new Error(`Subagent job already exists: ${id}`)
 
     let resolveSettle!: () => void
     const settle = new Promise<void>(resolve => {
@@ -147,6 +149,10 @@ export class JobRegistry {
     return this.jobs.get(id)
   }
 
+  has(id: string): boolean {
+    return this.jobs.has(id) || this.deliveredJobIds.has(id)
+  }
+
   isRunning(id: string): boolean {
     const job = this.jobs.get(id)
     return !!job && !job.settled
@@ -157,9 +163,14 @@ export class JobRegistry {
   }
 
   collect(id: string, signal: AbortSignal | undefined): Promise<SubagentJobResult | undefined> {
+    if (this.deliveredJobIds.has(id)) return Promise.resolve(undefined)
     const job = this.require(id)
     if (signal?.aborted) return Promise.reject(abortError())
-    if (job.settled) return Promise.resolve(this.takeResult(job))
+    if (job.settled) {
+      const result = this.takeResult(job)
+      if (result) this.completeDelivery(job)
+      return Promise.resolve(result)
+    }
 
     return new Promise((resolve, reject) => {
       const collector: Collector = { resolve, reject, signal }
@@ -179,7 +190,9 @@ export class JobRegistry {
     const job = this.jobs.get(id)
     if (!job || job.settled) return false
     job.controller.abort(`Subagent job ${id} cancelled`)
-    if (!job.started) this.finalize(job, job.failureResult(job.controller.signal.reason, true))
+    if (!job.started) {
+      this.finalize(job, job.failureResult!(job.controller.signal.reason, true))
+    }
     return true
   }
 
@@ -196,7 +209,9 @@ export class JobRegistry {
     const pending = [...this.jobs.values()].filter(job => !job.settled)
     for (const job of pending) {
       job.controller.abort('Session shutdown')
-      if (!job.started) this.finalize(job, job.failureResult(job.controller.signal.reason, true))
+      if (!job.started) {
+        this.finalize(job, job.failureResult!(job.controller.signal.reason, true))
+      }
     }
     await Promise.all(pending.map(job => job.settle))
   }
@@ -227,10 +242,12 @@ export class JobRegistry {
         this.removeAbortHandler(extra)
         extra.resolve(undefined)
       }
-    } else if (!this.suppressDelivery) {
+      if (delivered) this.completeDelivery(job)
+    } else if (!this.suppressDelivery && this.events.onPush) {
       const delivered = this.takeResult(job)
       if (delivered) {
-        this.events.onPush?.(job, delivered)
+        this.events.onPush(job, delivered)
+        this.completeDelivery(job)
       }
     }
     job.resolveSettle()
@@ -240,6 +257,15 @@ export class JobRegistry {
     if (!job.result || job.agents.every(agent => agent.state === 'delivered')) return undefined
     for (const agent of job.agents) agent.state = 'delivered'
     return job.result
+  }
+
+  private completeDelivery(job: InternalJob): void {
+    job.result = undefined
+    job.failureResult = undefined
+    job.collectors.length = 0
+    this.jobs.delete(job.id)
+    this.deliveredJobIds.add(job.id)
+    this.events.onDelivered?.(job)
   }
 
   private require(id: string): InternalJob {

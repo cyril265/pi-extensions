@@ -3,9 +3,10 @@ import { createHash, randomUUID } from 'node:crypto'
 import * as fs from 'node:fs'
 import { createServer } from 'node:net'
 import * as path from 'node:path'
-import { promisify } from 'node:util'
 import { hideSubagents } from '../herdr/agent-view.ts'
+import { writePrivateFile } from './private-files.ts'
 import {
+  ensureHerdrStateDirectory,
   getHerdrRecordPath,
   getHerdrStateDirectory,
   type HerdrSubagentRecord,
@@ -24,7 +25,8 @@ const HERDR_EVENT_PATH_ENV = 'PI_SIMPLE_SUBAGENT_HERDR_EVENT_PATH'
 const HERDR_ABORT_PATH_ENV = 'PI_SIMPLE_SUBAGENT_HERDR_ABORT_PATH'
 const HERDR_PROMPT_PATH_ENV = 'PI_SIMPLE_SUBAGENT_HERDR_PROMPT_PATH'
 const HERDR_START_PATH_ENV = 'PI_SIMPLE_SUBAGENT_HERDR_START_PATH'
-const execFileAsync = promisify(execFile)
+const HERDR_COMMAND_TIMEOUT_MS = 5000
+const HERDR_COMMAND_KILL_GRACE_MS = 250
 
 type HerdrAgentRequest = {
   name: string
@@ -115,7 +117,7 @@ export async function acquireHerdrWorkspaceLock(
 ): Promise<() => void> {
   const lockDirectory = path.join(getHerdrStateDirectory(), 'locks')
   const lockId = createHash('sha256').update(workspaceId).digest('hex').slice(0, 16)
-  fs.mkdirSync(lockDirectory, { recursive: true })
+  ensureHerdrStateDirectory(lockDirectory)
 
   while (true) {
     if (signal?.aborted) throw new Error('Subagent launch was aborted')
@@ -195,12 +197,57 @@ async function runHerdr(
   args: string[],
   cwd: string,
   responseRequired = true,
+  signal?: AbortSignal,
 ): Promise<HerdrCommandResult> {
   const command = process.env.HERDR_BIN_PATH || 'herdr'
   const commandLabel = `herdr ${args.slice(0, 2).join(' ')}`
   let stdout: string
   try {
-    const result = await execFileAsync(command, args, { cwd, encoding: 'utf8' })
+    const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+      let settled = false
+      let terminationError: Error | undefined
+      let killTimer: NodeJS.Timeout | undefined
+      const timeout = setTimeout(() => {
+        stop(new Error(`timed out after ${HERDR_COMMAND_TIMEOUT_MS}ms`))
+      }, HERDR_COMMAND_TIMEOUT_MS)
+      const finish = (
+        error: Error | undefined,
+        output = '',
+        errorOutput = '',
+      ) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        if (killTimer) clearTimeout(killTimer)
+        signal?.removeEventListener('abort', abortHandler)
+        if (terminationError) {
+          reject(terminationError)
+        } else if (error) {
+          const failure = error as Error & { stdout?: string; stderr?: string }
+          failure.stdout = output
+          failure.stderr = errorOutput
+          reject(failure)
+        } else {
+          resolve({ stdout: output, stderr: errorOutput })
+        }
+      }
+      const child = execFile(command, args, { cwd, encoding: 'utf8' }, (error, output, errorOutput) => {
+        finish(error || undefined, output, errorOutput)
+      })
+      const stop = (error: Error) => {
+        if (settled || terminationError) return
+        terminationError = error
+        child.kill('SIGTERM')
+        killTimer = setTimeout(() => {
+          child.kill('SIGKILL')
+          finish(undefined)
+        }, HERDR_COMMAND_KILL_GRACE_MS)
+      }
+      const abortHandler = () => stop(new Error('command was aborted'))
+
+      if (signal?.aborted) abortHandler()
+      else signal?.addEventListener('abort', abortHandler, { once: true })
+    })
     stdout = result.stdout
   } catch (error) {
     const failure = error as Error & { stdout?: string; stderr?: string }
@@ -233,10 +280,14 @@ async function runHerdr(
   return response || {}
 }
 
-export async function getHerdrParentLabel(fallback: string, cwd: string): Promise<string> {
+export async function getHerdrParentLabel(
+  fallback: string,
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<string> {
   const tabId = process.env.HERDR_TAB_ID
   if (!tabId) return fallback
-  return (await runHerdr(['tab', 'get', tabId], cwd)).result?.tab?.label || fallback
+  return (await runHerdr(['tab', 'get', tabId], cwd, true, signal)).result?.tab?.label || fallback
 }
 
 function getChildEnvironment(agent: SpawnedHerdrAgent): Record<string, string> {
@@ -276,7 +327,10 @@ function getChildEnvironmentArguments(agent: SpawnedHerdrAgent): string[] {
   ])
 }
 
-async function startHerdrAgent(agent: SpawnedHerdrAgent): Promise<void> {
+async function startHerdrAgent(
+  agent: SpawnedHerdrAgent,
+  signal: AbortSignal | undefined,
+): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt++) {
     try {
       const response = await runHerdr(
@@ -292,6 +346,8 @@ async function startHerdrAgent(agent: SpawnedHerdrAgent): Promise<void> {
           ...getChildArguments(agent),
         ],
         agent.cwd,
+        true,
+        signal,
       )
       if (response.result?.agent?.pane_id !== agent.paneId) {
         throw new Error(`Herdr did not start subagent "${agent.name}" in pane ${agent.paneId}`)
@@ -307,7 +363,11 @@ async function startHerdrAgent(agent: SpawnedHerdrAgent): Promise<void> {
   )
 }
 
-async function reportPaneMetadata(agent: SpawnedHerdrAgent, parentLabel: string): Promise<void> {
+async function reportPaneMetadata(
+  agent: SpawnedHerdrAgent,
+  parentLabel: string,
+  signal: AbortSignal | undefined,
+): Promise<void> {
   await runHerdr(
     [
       'pane',
@@ -328,12 +388,16 @@ async function reportPaneMetadata(agent: SpawnedHerdrAgent, parentLabel: string)
     ],
     agent.cwd,
     false,
+    signal,
   )
 }
 
-async function waitForAgentDetection(agent: SpawnedHerdrAgent): Promise<void> {
+async function waitForAgentDetection(
+  agent: SpawnedHerdrAgent,
+  signal: AbortSignal | undefined,
+): Promise<void> {
   for (let attempt = 0; attempt < 150; attempt++) {
-    const response = await runHerdr(['pane', 'get', agent.paneId], agent.cwd)
+    const response = await runHerdr(['pane', 'get', agent.paneId], agent.cwd, true, signal)
     if (response.result?.pane?.agent === 'pi') return
     await new Promise(resolve => setTimeout(resolve, 100))
   }
@@ -432,7 +496,7 @@ async function waitForAgent(
     if (livenessChecks === 10) {
       livenessChecks = 0
       try {
-        const pane = await runHerdr(['pane', 'get', agent.paneId], agent.cwd)
+        const pane = await runHerdr(['pane', 'get', agent.paneId], agent.cwd, true, signal)
         if (pane.result?.pane?.agent === 'pi') {
           consecutiveLivenessFailures = 0
         } else {
@@ -458,7 +522,7 @@ async function waitForAgent(
 
 async function interruptAgent(agent: SpawnedHerdrAgent): Promise<void> {
   try {
-    fs.writeFileSync(agent.abortPath, '')
+    writePrivateFile(agent.abortPath, '')
     for (let attempt = 0; attempt < 30; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 100))
       if (fs.existsSync(agent.resultPath)) break
@@ -519,7 +583,7 @@ export async function runSubagentsInHerdr(
 
     await hideSubagents(socketPath, 'local.simple-subagent')
 
-    const paneList = await runHerdr(['pane', 'list'], agents[0].cwd)
+    const paneList = await runHerdr(['pane', 'list'], agents[0].cwd, true, signal)
     if (!paneList.result?.panes) throw new Error('Herdr pane list returned no panes')
     pruneHerdrRecords(new Set(paneList.result.panes.map(pane => pane.pane_id)))
 
@@ -533,7 +597,11 @@ export async function runSubagentsInHerdr(
     )
     await Promise.allSettled(
       finished.map(async record => {
-        await runHerdr(['pane', 'close', record.paneId], agents[0].cwd, false).catch(() => {})
+        try {
+          await runHerdr(['pane', 'close', record.paneId], agents[0].cwd, false)
+        } catch {
+          return
+        }
         try {
           fs.unlinkSync(getHerdrRecordPath(record.id))
         } catch {
@@ -555,8 +623,8 @@ export async function runSubagentsInHerdr(
         promptPath: path.join(runDirectory, `${id}-prompt.txt`),
         startPath: path.join(runDirectory, `${id}-start`),
       }
-      fs.writeFileSync(child.eventPath, '')
-      fs.writeFileSync(child.promptPath, child.prompt)
+      writePrivateFile(child.eventPath, '')
+      writePrivateFile(child.promptPath, child.prompt)
       return child
     })
     firstAgent = prepared[0]
@@ -568,6 +636,7 @@ export async function runSubagentsInHerdr(
         ['tab', 'rename', tabId, HERDR_SUBAGENT_TAB_LABEL],
         firstAgent.cwd,
         false,
+        signal,
       ).catch(() => {})
     } else {
       const tabResponse = await runHerdr(
@@ -584,6 +653,8 @@ export async function runSubagentsInHerdr(
           ...getChildEnvironmentArguments(firstAgent),
         ],
         firstAgent.cwd,
+        true,
+        signal,
       )
       const createdTabId = tabResponse.result?.tab?.tab_id
       const createdRootPaneId = tabResponse.result?.root_pane?.pane_id
@@ -647,6 +718,8 @@ export async function runSubagentsInHerdr(
             ...getChildEnvironmentArguments(child),
           ],
           child.cwd,
+          true,
+          signal,
         )
         const paneId = splitResponse.result?.pane?.pane_id
         if (!paneId) throw new Error(`Herdr did not create a pane for subagent "${child.name}"`)
@@ -665,11 +738,11 @@ export async function runSubagentsInHerdr(
           paneSizes.push({ width: 1, height: 1 })
         }
       }
-      await reportPaneMetadata(child, parentLabel)
-      await startHerdrAgent(child)
+      await reportPaneMetadata(child, parentLabel, signal)
+      await startHerdrAgent(child, signal)
       // The child bridge holds the prompt until this file exists, so Herdr
       // observes an idle agent and reports it ready before the first turn.
-      fs.writeFileSync(child.startPath, '')
+      writePrivateFile(child.startPath, '')
       createAgentRecord(
         child,
         runId,
@@ -683,7 +756,9 @@ export async function runSubagentsInHerdr(
       onStatus(index, 'running')
     }
 
-    const detections = await Promise.allSettled(spawned.map(waitForAgentDetection))
+    const detections = await Promise.allSettled(
+      spawned.map(agent => waitForAgentDetection(agent, signal)),
+    )
     const failedDetection = detections.find(result => result.status === 'rejected')
     if (failedDetection?.status === 'rejected') throw failedDetection.reason
   } catch (error) {

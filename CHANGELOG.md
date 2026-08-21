@@ -2,6 +2,15 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-08-21 23:05
+
+### simple-subagent
+
+- Prevented concurrent jobs from using the same subagent session and released completed job results and parent contexts after delivery.
+- Made Herdr commands cancellable and time-bounded, retained records when pane cleanup fails, and restricted subagent state and result files to owner-only access.
+- Gave colliding agent names distinct result files, preserved every text block in final assistant output, and treated signal-terminated child processes as failures.
+- Clarified that `nodeScript` composes Pi tool results into later tool calls while direct and parallel tools handle independent work.
+
 ## 2026-08-20 20:48
 
 ### simple-subagent

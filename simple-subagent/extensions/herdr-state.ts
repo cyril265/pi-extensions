@@ -1,6 +1,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { writePrivateFile } from './private-files.ts'
 
 export type HerdrSubagentStatus = 'queued' | 'running' | 'done' | 'failed' | 'interrupted'
 
@@ -44,10 +45,19 @@ export function getHerdrRecordPath(id: string): string {
   return path.join(getHerdrRecordDirectory(), `${id}.json`)
 }
 
+export function ensureHerdrStateDirectory(directory: string): void {
+  const stateDirectory = getHerdrStateDirectory()
+  fs.mkdirSync(stateDirectory, { recursive: true, mode: 0o700 })
+  fs.chmodSync(stateDirectory, 0o700)
+  if (directory === stateDirectory) return
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
+  fs.chmodSync(directory, 0o700)
+}
+
 export function writeHerdrRecord(recordPath: string, record: HerdrSubagentRecord): void {
-  fs.mkdirSync(path.dirname(recordPath), { recursive: true })
+  ensureHerdrStateDirectory(path.dirname(recordPath))
   const temporaryPath = `${recordPath}.${process.pid}.tmp`
-  fs.writeFileSync(temporaryPath, `${JSON.stringify(record, null, 2)}\n`)
+  writePrivateFile(temporaryPath, `${JSON.stringify(record, null, 2)}\n`)
   fs.renameSync(temporaryPath, recordPath)
 }
 
@@ -66,15 +76,15 @@ function isMissingFileError(error: unknown): boolean {
 
 export function readHerdrRecords(): HerdrSubagentRecord[] {
   const directory = getHerdrRecordDirectory()
-  if (!fs.existsSync(directory)) return []
+  ensureHerdrStateDirectory(directory)
   const records: HerdrSubagentRecord[] = []
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     if (!(entry.isFile() && entry.name.endsWith('.json'))) continue
     try {
+      const recordPath = path.join(directory, entry.name)
+      fs.chmodSync(recordPath, 0o600)
       records.push(
-        JSON.parse(
-          fs.readFileSync(path.join(directory, entry.name), 'utf8'),
-        ) as HerdrSubagentRecord,
+        JSON.parse(fs.readFileSync(recordPath, 'utf8')) as HerdrSubagentRecord,
       )
     } catch (error) {
       if (!isMissingFileError(error)) throw error
