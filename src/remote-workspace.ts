@@ -750,7 +750,6 @@ export async function resolveNewRemoteWorkspace(
 ): Promise<NewRemoteWorkspace> {
   const preflight = await preflightRemoteHost(options.host, options.herdr.output);
   const remoteDir = `${preflight.home}/.pi-remote-handoff/workspaces/${workspaceName(options.repoRoot, options.commonGitDir)}`;
-  await ssh(options.host, `test ! -e ${shellQuote(remoteDir)}`);
   const profileHome = `${remoteDir}/profile/home`;
   return {
     remoteDir,
@@ -760,6 +759,13 @@ export async function resolveNewRemoteWorkspace(
     profileHome,
     conversationCwd: `${remoteDir}/repository`,
   };
+}
+
+export async function assertRemoteWorkspaceAvailable(
+  host: string,
+  workspace: NewRemoteWorkspace,
+): Promise<void> {
+  await ssh(host, `test ! -e ${shellQuote(workspace.remoteDir)}`);
 }
 
 export async function refreshStoppedRemoteWorkspace(

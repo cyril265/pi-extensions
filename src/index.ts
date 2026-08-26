@@ -33,6 +33,7 @@ import {
   type TerminalAttachmentEnd,
 } from "./remote.js";
 import {
+  assertRemoteWorkspaceAvailable,
   attachRemoteRun,
   cleanupRemoteWorkspace,
   downloadPreparedResult,
@@ -565,6 +566,7 @@ async function startHandoff(
     herdr,
   });
   await addRemote(localAgentDir, host);
+  await assertRemoteWorkspaceAvailable(host, workspace);
 
   const id = randomUUID();
   const launchId = randomUUID();
