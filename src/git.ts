@@ -15,7 +15,7 @@ export interface RepositoryPaths {
   commonGitDir: string;
 }
 
-function git(args: string[], options: GitOptions): Promise<string> {
+export function git(args: string[], options: GitOptions): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     const child = execFile(
       "git",

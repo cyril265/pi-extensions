@@ -3,7 +3,7 @@ import {
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { createHash, randomUUID } from "node:crypto";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -12,6 +12,7 @@ import {
   checkApplyPatch,
   createBinaryPatch,
   createSnapshot,
+  git,
   resolveTree,
 } from "./git.js";
 import {
@@ -57,13 +58,6 @@ export interface InteractiveMergeReviewOptions {
   includedPaths: readonly string[];
 }
 
-interface GitOptions {
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  input?: string;
-  preserveOutput?: boolean;
-}
-
 interface MergeReview {
   repoRoot: string;
   localDir: string;
@@ -92,29 +86,6 @@ type ReviewOutcome = "complete" | "leave";
 interface ReviewPiExit {
   started: boolean;
   error?: Error;
-}
-
-function git(args: string[], options: GitOptions): Promise<string> {
-  return new Promise((resolvePromise, reject) => {
-    const child = execFile(
-      "git",
-      args,
-      {
-        cwd: options.cwd,
-        env: { ...process.env, ...options.env },
-        encoding: "utf8",
-        maxBuffer: 128 * 1024 * 1024,
-      },
-      (error, stdout, stderr) => {
-        if (error) {
-          reject(new Error(`git ${args[0] ?? ""} failed: ${stderr || stdout}`.trim()));
-          return;
-        }
-        resolvePromise(options.preserveOutput ? stdout : stdout.trimEnd());
-      },
-    );
-    child.stdin?.end(options.input);
-  });
 }
 
 async function deleteReviewRef(repoRoot: string, ref: string): Promise<void> {
