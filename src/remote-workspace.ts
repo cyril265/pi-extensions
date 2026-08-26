@@ -28,7 +28,7 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const requiredRemoteCommands = ["bash", "git", "node", "npm", "tar", "flock", "ssh"];
 const remoteProgressPrefix = "PI_REMOTE_HANDOFF_PROGRESS\t";
 
-export type RemoteLifecycleState =
+type RemoteLifecycleState =
   | "preparing"
   | "running"
   | "idle"
@@ -37,7 +37,7 @@ export type RemoteLifecycleState =
   | "prepared"
   | "failed";
 
-export type LaunchReconciliation =
+type LaunchReconciliation =
   | { kind: "not-launched" }
   | { kind: "matching-starting" }
   | { kind: "matching-live" }
@@ -45,7 +45,7 @@ export type LaunchReconciliation =
   | { kind: "matching-unacknowledged" }
   | { kind: "conflicting"; recordedLaunchId: string; processRunning: boolean };
 
-export type PreparedResultObservation =
+type PreparedResultObservation =
   | { kind: "none" }
   | { kind: "prepared" }
   | { kind: "mismatched"; resultLaunchId: string | null };
@@ -75,7 +75,7 @@ interface RemoteWorkspacePaths {
   resultBundle: string;
 }
 
-export interface LaunchRemoteRunOptions {
+interface LaunchRemoteRunOptions {
   task: ReservedTaskState | ActiveTaskState | StoppedTaskState;
   piVersion: string;
   trustMode: "--approve" | "--no-approve";
@@ -89,6 +89,7 @@ type RemotePiEnvironmentProblem =
   | "runtime-version";
 
 interface NewRemoteWorkspace {
+  host: string;
   remoteDir: string;
   remoteAgentDir: string;
   remotePiCommand: string;
@@ -122,7 +123,7 @@ interface PrepareRemoteContinuationOptions {
   onProgress: (message: string) => void;
 }
 
-export interface DownloadedPreparedResult {
+interface DownloadedPreparedResult {
   bundle: string;
   session: string;
 }
@@ -752,6 +753,7 @@ export async function resolveNewRemoteWorkspace(
   const remoteDir = `${preflight.home}/.pi-remote-handoff/workspaces/${workspaceName(options.repoRoot, options.commonGitDir)}`;
   const profileHome = `${remoteDir}/profile/home`;
   return {
+    host: options.host,
     remoteDir,
     remoteAgentDir: `${profileHome}/.pi/agent`,
     remotePiCommand: `${preflight.home}/.pi-remote-handoff/runtime/node_modules/.bin/pi`,
@@ -762,10 +764,9 @@ export async function resolveNewRemoteWorkspace(
 }
 
 export async function assertRemoteWorkspaceAvailable(
-  host: string,
   workspace: NewRemoteWorkspace,
 ): Promise<void> {
-  await ssh(host, `test ! -e ${shellQuote(workspace.remoteDir)}`);
+  await ssh(workspace.host, `test ! -e ${shellQuote(workspace.remoteDir)}`);
 }
 
 export async function refreshStoppedRemoteWorkspace(
@@ -905,7 +906,7 @@ export async function launchRemoteRun(options: LaunchRemoteRunOptions): Promise<
   validateLaunchResult((await ssh(task.host, command)).stdout);
 }
 
-export async function attachmentMetadata(task: ActiveTaskState): Promise<AttachHerdrTerminalOptions> {
+async function attachmentMetadata(task: ActiveTaskState): Promise<AttachHerdrTerminalOptions> {
   const observation = await observeRemoteWorkspace(task);
   if (
     observation.reconciliation.kind !== "matching-live"

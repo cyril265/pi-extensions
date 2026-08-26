@@ -566,7 +566,7 @@ async function startHandoff(
     herdr,
   });
   await addRemote(localAgentDir, host);
-  await assertRemoteWorkspaceAvailable(host, workspace);
+  await assertRemoteWorkspaceAvailable(workspace);
 
   const id = randomUUID();
   const launchId = randomUUID();

@@ -34,12 +34,12 @@ Work only in this temporary worktree. Leave the real repository, its index, and 
 
 When the merge is ready, run /remote-handoff and choose "Complete merge review". Choose "Leave merge review" to exit without consuming the prepared result.`;
 
-export type MergeReviewApplyPlanInput = Omit<
+type MergeReviewApplyPlanInput = Omit<
   ApplyPlan,
   "returnedSessionFile" | "returnedSessionSha256"
 >;
 
-export type InteractiveMergeReviewResult =
+type InteractiveMergeReviewResult =
   | { kind: "left" }
   | {
     kind: "completed";
@@ -47,7 +47,7 @@ export type InteractiveMergeReviewResult =
     reviewSession: PreparedSessionFile;
   };
 
-export interface InteractiveMergeReviewOptions {
+interface InteractiveMergeReviewOptions {
   ctx: ExtensionCommandContext;
   repoRoot: string;
   localDir: string;
