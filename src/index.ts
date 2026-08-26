@@ -7,7 +7,7 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { captureAuthenticationSnapshot, returnRemoteAuthentication } from "./auth.js";
 import {
@@ -30,11 +30,6 @@ import { buildProfile } from "./profile.js";
 import {
   isSshHostUnreachableError,
   localHerdrInstallation,
-  remoteCommand,
-  scpTo,
-  shellQuote,
-  ssh,
-  sshStreaming,
   type TerminalAttachmentEnd,
 } from "./remote.js";
 import {
@@ -45,13 +40,12 @@ import {
   invalidatePreparedResult,
   launchRemoteRun,
   observeRemoteWorkspace,
-  preflightRemoteHost,
-  remotePiEnvironmentProblems,
-  remoteWorkspacePaths,
-  repairRemoteEnvironment,
+  prepareRemoteContinuation,
+  provisionInitialRemoteWorkspace,
+  refreshStoppedRemoteWorkspace,
   requestGracefulStop,
+  resolveNewRemoteWorkspace,
   settleUnstartedReservation,
-  uploadRemoteRunFiles,
   type RemoteWorkspaceObservation,
   type RemoteWorkspaceStatus,
 } from "./remote-workspace.js";
@@ -87,7 +81,6 @@ import {
 import { showReadOnlyText } from "./text-viewer.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const remoteProgressPrefix = "PI_REMOTE_HANDOFF_PROGRESS\t";
 const controlStatusKey = "remote-handoff-control";
 const gracefulStopTimeoutMs = 10_000;
 
@@ -122,12 +115,6 @@ type MenuAction =
 interface MenuItem {
   action: MenuAction;
   label: string;
-}
-
-function workspaceName(repoRoot: string, commonGitDir: string): string {
-  const name = basename(repoRoot).replaceAll(/[^A-Za-z0-9_-]/g, "-") || "repository";
-  const hash = createHash("sha256").update(commonGitDir).digest("hex").slice(0, 8);
-  return `${name}-${hash}`;
 }
 
 function currentLocation(task: TaskState, ctx: ExtensionContext): "control" | "original" | "unrelated" {
@@ -324,7 +311,7 @@ async function observeTask(task: TaskState): Promise<ObservedTask> {
 async function withProgress<T>(
   ctx: ExtensionCommandContext,
   initialMessage: string,
-  operation: (onLine: (line: string) => void) => Promise<T>,
+  operation: (onProgress: (message: string) => void) => Promise<T>,
 ): Promise<T> {
   let message = initialMessage;
   let started = Date.now();
@@ -335,9 +322,8 @@ async function withProgress<T>(
   }, 1000);
   timer.unref();
   try {
-    return await operation((line) => {
-      if (!line.startsWith(remoteProgressPrefix)) return;
-      message = line.slice(remoteProgressPrefix.length);
+    return await operation((nextMessage) => {
+      message = nextMessage;
       started = Date.now();
       ctx.ui.setStatus("remote-handoff", message);
     });
@@ -503,74 +489,6 @@ async function attachRemoteTerminal(
   return outcome;
 }
 
-async function prepareInitialRemoteWorkspace(options: {
-  ctx: ExtensionCommandContext;
-  task: ReservedTaskState;
-  handoffBundle: string;
-  portableSession: string;
-  profileArchive: string;
-  authenticationBaseline: string;
-  piVersion: string;
-}): Promise<void> {
-  const { ctx, task } = options;
-  const paths = remoteWorkspacePaths(task);
-  const prepareProfile = join(packageRoot, "remote", "prepare-profile.sh");
-
-  ctx.ui.setStatus("remote-handoff", "Creating private remote workspace...");
-  await ssh(
-    task.host,
-    `umask 077 && mkdir -p -m 700 ${shellQuote(paths.control)} && chmod 700 ${shellQuote(task.remoteDir)} ${shellQuote(paths.control)}`,
-  );
-  await scpTo(task.host, options.handoffBundle, `${paths.control}/handoff.bundle`);
-  await scpTo(task.host, options.portableSession, paths.session);
-  await scpTo(task.host, options.profileArchive, `${paths.control}/profile.tar.gz`);
-  await scpTo(task.host, options.authenticationBaseline, `${paths.control}/initial-auth.json`);
-  await scpTo(task.host, prepareProfile, paths.prepareProfile);
-  await ssh(
-    task.host,
-    [
-      `chmod 600 ${shellQuote(`${paths.control}/handoff.bundle`)} ${shellQuote(paths.session)} ${shellQuote(`${paths.control}/profile.tar.gz`)} ${shellQuote(`${paths.control}/initial-auth.json`)}`,
-      `chmod 700 ${shellQuote(paths.prepareProfile)}`,
-    ].join(" && "),
-  );
-
-  await withProgress(
-    ctx,
-    `Preparing remote profile and shared Pi ${options.piVersion}...`,
-    (onLine) => sshStreaming(
-      task.host,
-      remoteCommand([
-        paths.prepareProfile,
-        `${paths.control}/profile.tar.gz`,
-        paths.profile,
-        paths.runtime,
-        options.piVersion,
-        "both",
-        "initial",
-      ]),
-      onLine,
-    ),
-  );
-
-  ctx.ui.setStatus("remote-handoff", "Creating remote repository...");
-  await ssh(
-    task.host,
-    [
-      "export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_ATTR_NOSYSTEM=1",
-      `umask 077 && mkdir -m 700 ${shellQuote(paths.repository)}`,
-      `git -C ${shellQuote(paths.repository)} init -q`,
-      `git -C ${shellQuote(paths.repository)} fetch -q ${shellQuote(`${paths.control}/handoff.bundle`)} ${shellQuote(`${task.handoffRef}:${task.handoffRef}`)}`,
-      `git -C ${shellQuote(paths.repository)} checkout -q --detach ${shellQuote(task.handoffCommit)}`,
-    ].join(" && "),
-  );
-
-  await uploadRemoteRunFiles({
-    task,
-    localRunner: join(packageRoot, "remote", "runner.sh"),
-    localCompanion: join(packageRoot, "remote", "companion.ts"),
-  });
-}
-
 async function attachWithControlConversation(
   ctx: ExtensionCommandContext,
   task: ActiveTaskState,
@@ -640,14 +558,17 @@ async function startHandoff(
   ctx.ui.setStatus("remote-handoff", "Checking local Herdr...");
   const herdr = await localHerdrInstallation();
   ctx.ui.setStatus("remote-handoff", `Checking remote host ${host}...`);
-  const preflight = await preflightRemoteHost(host, herdr.output);
+  const workspace = await resolveNewRemoteWorkspace({
+    host,
+    repoRoot: repository.repoRoot,
+    commonGitDir: repository.commonGitDir,
+    herdr,
+  });
   await addRemote(localAgentDir, host);
 
   const id = randomUUID();
   const launchId = randomUUID();
   const localDir = taskDirectory(repository.commonGitDir);
-  const remoteDir = `${preflight.home}/.pi-remote-handoff/workspaces/${workspaceName(repository.repoRoot, repository.commonGitDir)}`;
-  await ssh(host, `test ! -e ${shellQuote(remoteDir)}`);
 
   const originalSessionFile = ctx.sessionManager.getSessionFile();
   if (!originalSessionFile || !isAbsolute(originalSessionFile)) {
@@ -667,12 +588,11 @@ async function startHandoff(
   try {
     await rm(localDir, { recursive: true, force: true });
     await mkdir(localDir, { recursive: true, mode: 0o700 });
-    const remoteRepository = `${remoteDir}/repository`;
     ctx.ui.setStatus("remote-handoff", "Exporting active conversation...");
     const exported = await exportActiveBranch(
       ctx.sessionManager,
       portableSession,
-      remoteRepository,
+      workspace.conversationCwd,
       join(localDir, "original-session.jsonl"),
     );
     ctx.ui.setStatus("remote-handoff", "Snapshotting local files...");
@@ -685,19 +605,18 @@ async function startHandoff(
     await rm(handoffBundle, { force: true });
     await createBundle(repository.repoRoot, handoffBundle, handoffRef);
     ctx.ui.setStatus("remote-handoff", "Building portable Pi profile...");
-    const remoteProfileHome = `${remoteDir}/profile/home`;
     const profileArchive = await buildProfile({
       agentDir: localAgentDir,
       homeDir: homedir(),
       localDir,
-      remoteProfileHome,
+      remoteProfileHome: workspace.profileHome,
       excludedPackagePath: packageRoot,
     });
     const authenticationBaseline = await captureAuthenticationSnapshot(localAgentDir, localDir);
     await createControlSession(controlSessionFile, repository.repoRoot);
     const piVersion = await getExecutingPiVersion();
 
-    task = {
+    const reservedTask: ReservedTaskState = {
       version: 7,
       phase: "reserved",
       reservationKind: "start",
@@ -707,11 +626,11 @@ async function startHandoff(
       repoRoot: repository.repoRoot,
       commonGitDir: repository.commonGitDir,
       localDir,
-      remoteDir,
-      remoteAgentDir: `${remoteProfileHome}/.pi/agent`,
-      remotePiCommand: `${preflight.home}/.pi-remote-handoff/runtime/node_modules/.bin/pi`,
+      remoteDir: workspace.remoteDir,
+      remoteAgentDir: workspace.remoteAgentDir,
+      remotePiCommand: workspace.remotePiCommand,
       herdrSession: `pi-handoff-${createHash("sha256").update(id).digest("hex").slice(0, 12)}`,
-      remoteHerdrCommand: preflight.remoteHerdrCommand,
+      remoteHerdrCommand: workspace.remoteHerdrCommand,
       herdrVersion: herdr.version,
       handoffCommit,
       handoffRef,
@@ -725,26 +644,32 @@ async function startHandoff(
       controlSessionFile,
       authentication: { kind: "pending", localAgentDir },
     };
-    await saveTask(task);
+    task = reservedTask;
+    await saveTask(reservedTask);
 
-    await prepareInitialRemoteWorkspace({
+    await withProgress(
       ctx,
-      task,
-      handoffBundle,
-      portableSession,
-      profileArchive,
-      authenticationBaseline,
-      piVersion,
-    });
+      "Creating private remote workspace...",
+      (onProgress) => provisionInitialRemoteWorkspace({
+        task: reservedTask,
+        artifacts: {
+          handoffBundle,
+          portableSession,
+          profileArchive,
+          authenticationBaseline,
+        },
+        piVersion,
+        onProgress,
+      }),
+    );
 
     ctx.ui.setStatus("remote-handoff", "Launching remote Pi...");
     await launchRemoteRun({
-      task,
+      task: reservedTask,
       piVersion,
       trustMode: ctx.isProjectTrusted() ? "--approve" : "--no-approve",
-      workspaceLabel: `pi-remote-handoff: ${workspaceName(repository.repoRoot, repository.commonGitDir)}`,
     });
-    const reconciled = await reconcileRemoteTask(task);
+    const reconciled = await reconcileRemoteTask(reservedTask);
     const current = reconciled.task;
     ctx.ui.setStatus("remote-handoff", undefined);
 
@@ -811,28 +736,14 @@ async function continueRemote(
 
   ctx.ui.setStatus("remote-handoff", "Checking local and remote runtimes...");
   const herdr = await localHerdrInstallation();
-  const preflight = await preflightRemoteHost(stopped.host, herdr.output);
   const piVersion = await getExecutingPiVersion();
-  const currentStopped: StoppedTaskState = {
-    ...stopped,
-    remoteHerdrCommand: preflight.remoteHerdrCommand,
-    herdrVersion: herdr.version,
-    remotePiCommand: `${preflight.home}/.pi-remote-handoff/runtime/node_modules/.bin/pi`,
-  };
+  const currentStopped = await refreshStoppedRemoteWorkspace(stopped, herdr);
   await saveTask(currentStopped);
 
-  const problems = await remotePiEnvironmentProblems(currentStopped, piVersion);
-  await repairRemoteEnvironment({
+  await prepareRemoteContinuation({
     task: currentStopped,
     piVersion,
-    problems,
-    localPrepareProfileScript: join(packageRoot, "remote", "prepare-profile.sh"),
     onProgress: (message) => ctx.ui.setStatus("remote-handoff", message),
-  });
-  await uploadRemoteRunFiles({
-    task: currentStopped,
-    localRunner: join(packageRoot, "remote", "runner.sh"),
-    localCompanion: join(packageRoot, "remote", "companion.ts"),
   });
 
   const reserved: ReservedTaskState = {
@@ -846,7 +757,6 @@ async function continueRemote(
     task: reserved,
     piVersion,
     trustMode: ctx.isProjectTrusted() ? "--approve" : "--no-approve",
-    workspaceLabel: `pi-remote-handoff: ${workspaceName(task.repoRoot, task.commonGitDir)}`,
   });
   const reconciled = await reconcileRemoteTask(reserved);
   ctx.ui.setStatus("remote-handoff", undefined);

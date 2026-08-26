@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
-import { join, posix } from "node:path";
+import { basename, dirname, join, posix, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import type {
   ActiveTaskState,
   PreparedTaskState,
@@ -18,9 +20,11 @@ import {
   ssh,
   sshStreaming,
   type AttachHerdrTerminalOptions,
+  type HerdrInstallation,
   type TerminalAttachmentEnd,
 } from "./remote.js";
 
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const requiredRemoteCommands = ["bash", "git", "node", "npm", "tar", "flock", "ssh"];
 const remoteProgressPrefix = "PI_REMOTE_HANDOFF_PROGRESS\t";
 
@@ -59,12 +63,7 @@ export interface RemoteWorkspaceObservation {
   attachment: { paneId: string } | null;
 }
 
-export interface RemotePreflight {
-  home: string;
-  remoteHerdrCommand: string;
-}
-
-export interface RemoteWorkspacePaths {
+interface RemoteWorkspacePaths {
   control: string;
   repository: string;
   profile: string;
@@ -80,28 +79,47 @@ export interface LaunchRemoteRunOptions {
   task: ReservedTaskState | ActiveTaskState | StoppedTaskState;
   piVersion: string;
   trustMode: "--approve" | "--no-approve";
-  workspaceLabel: string;
 }
 
-export type RemotePiEnvironmentProblem =
+type RemotePiEnvironmentProblem =
   | "profile-missing"
   | "profile-invalid"
   | "authentication-missing"
   | "runtime-missing"
   | "runtime-version";
 
-export interface RepairRemoteEnvironmentOptions {
-  task: StoppedTaskState;
+interface NewRemoteWorkspace {
+  remoteDir: string;
+  remoteAgentDir: string;
+  remotePiCommand: string;
+  remoteHerdrCommand: string;
+  profileHome: string;
+  conversationCwd: string;
+}
+
+interface ResolveNewRemoteWorkspaceOptions {
+  host: string;
+  repoRoot: string;
+  commonGitDir: string;
+  herdr: HerdrInstallation;
+}
+
+interface ProvisionInitialRemoteWorkspaceOptions {
+  task: ReservedTaskState;
+  artifacts: {
+    handoffBundle: string;
+    portableSession: string;
+    profileArchive: string;
+    authenticationBaseline: string;
+  };
   piVersion: string;
-  problems: readonly RemotePiEnvironmentProblem[];
-  localPrepareProfileScript: string;
   onProgress: (message: string) => void;
 }
 
-export interface UploadRemoteRunFilesOptions {
-  task: ReservedTaskState | RemoteOwnedTaskState;
-  localRunner: string;
-  localCompanion: string;
+interface PrepareRemoteContinuationOptions {
+  task: StoppedTaskState;
+  piVersion: string;
+  onProgress: (message: string) => void;
 }
 
 export interface DownloadedPreparedResult {
@@ -126,6 +144,11 @@ interface HerdrServerStatus {
   running: boolean;
   version: string | null;
   compatible: boolean | null;
+}
+
+interface RemotePreflight {
+  home: string;
+  remoteHerdrCommand: string;
 }
 
 const observeScript = String.raw`
@@ -657,7 +680,13 @@ async function deleteRecordedHerdrSession(task: TaskState): Promise<void> {
   validateHerdrMutation(result.stdout, task, "deleted");
 }
 
-export function remoteWorkspacePaths(task: TaskState): RemoteWorkspacePaths {
+function workspaceName(repoRoot: string, commonGitDir: string): string {
+  const name = basename(repoRoot).replaceAll(/[^A-Za-z0-9_-]/g, "-") || "repository";
+  const hash = createHash("sha256").update(commonGitDir).digest("hex").slice(0, 8);
+  return `${name}-${hash}`;
+}
+
+function remoteWorkspacePaths(task: TaskState): RemoteWorkspacePaths {
   const control = `${task.remoteDir}/control`;
   return {
     control,
@@ -672,7 +701,7 @@ export function remoteWorkspacePaths(task: TaskState): RemoteWorkspacePaths {
   };
 }
 
-export async function preflightRemoteHost(host: string, expectedHerdrOutput: string): Promise<RemotePreflight> {
+async function preflightRemoteHost(host: string, expectedHerdrOutput: string): Promise<RemotePreflight> {
   const result = await ssh(
     host,
     [
@@ -714,6 +743,95 @@ export async function preflightRemoteHost(host: string, expectedHerdrOutput: str
     throw new Error(`The remote host returned invalid preflight metadata: ${JSON.stringify(result.stdout)}`);
   }
   return { home, remoteHerdrCommand };
+}
+
+export async function resolveNewRemoteWorkspace(
+  options: ResolveNewRemoteWorkspaceOptions,
+): Promise<NewRemoteWorkspace> {
+  const preflight = await preflightRemoteHost(options.host, options.herdr.output);
+  const remoteDir = `${preflight.home}/.pi-remote-handoff/workspaces/${workspaceName(options.repoRoot, options.commonGitDir)}`;
+  await ssh(options.host, `test ! -e ${shellQuote(remoteDir)}`);
+  const profileHome = `${remoteDir}/profile/home`;
+  return {
+    remoteDir,
+    remoteAgentDir: `${profileHome}/.pi/agent`,
+    remotePiCommand: `${preflight.home}/.pi-remote-handoff/runtime/node_modules/.bin/pi`,
+    remoteHerdrCommand: preflight.remoteHerdrCommand,
+    profileHome,
+    conversationCwd: `${remoteDir}/repository`,
+  };
+}
+
+export async function refreshStoppedRemoteWorkspace(
+  task: StoppedTaskState,
+  herdr: HerdrInstallation,
+): Promise<StoppedTaskState> {
+  const preflight = await preflightRemoteHost(task.host, herdr.output);
+  return {
+    ...task,
+    remoteHerdrCommand: preflight.remoteHerdrCommand,
+    herdrVersion: herdr.version,
+    remotePiCommand: `${preflight.home}/.pi-remote-handoff/runtime/node_modules/.bin/pi`,
+  };
+}
+
+export async function provisionInitialRemoteWorkspace(
+  options: ProvisionInitialRemoteWorkspaceOptions,
+): Promise<void> {
+  const { task } = options;
+  const paths = remoteWorkspacePaths(task);
+  const prepareProfile = join(packageRoot, "remote", "prepare-profile.sh");
+
+  options.onProgress("Creating private remote workspace...");
+  await ssh(
+    task.host,
+    `umask 077 && mkdir -p -m 700 ${shellQuote(paths.control)} && chmod 700 ${shellQuote(task.remoteDir)} ${shellQuote(paths.control)}`,
+  );
+  await scpTo(task.host, options.artifacts.handoffBundle, `${paths.control}/handoff.bundle`);
+  await scpTo(task.host, options.artifacts.portableSession, paths.session);
+  await scpTo(task.host, options.artifacts.profileArchive, `${paths.control}/profile.tar.gz`);
+  await scpTo(task.host, options.artifacts.authenticationBaseline, `${paths.control}/initial-auth.json`);
+  await scpTo(task.host, prepareProfile, paths.prepareProfile);
+  await ssh(
+    task.host,
+    [
+      `chmod 600 ${shellQuote(`${paths.control}/handoff.bundle`)} ${shellQuote(paths.session)} ${shellQuote(`${paths.control}/profile.tar.gz`)} ${shellQuote(`${paths.control}/initial-auth.json`)}`,
+      `chmod 700 ${shellQuote(paths.prepareProfile)}`,
+    ].join(" && "),
+  );
+
+  options.onProgress(`Preparing remote profile and shared Pi ${options.piVersion}...`);
+  await sshStreaming(
+    task.host,
+    remoteCommand([
+      paths.prepareProfile,
+      `${paths.control}/profile.tar.gz`,
+      paths.profile,
+      paths.runtime,
+      options.piVersion,
+      "both",
+      "initial",
+    ]),
+    (line) => {
+      if (line.startsWith(remoteProgressPrefix)) {
+        options.onProgress(line.slice(remoteProgressPrefix.length));
+      }
+    },
+  );
+
+  options.onProgress("Creating remote repository...");
+  await ssh(
+    task.host,
+    [
+      "export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_ATTR_NOSYSTEM=1",
+      `umask 077 && mkdir -m 700 ${shellQuote(paths.repository)}`,
+      `git -C ${shellQuote(paths.repository)} init -q`,
+      `git -C ${shellQuote(paths.repository)} fetch -q ${shellQuote(`${paths.control}/handoff.bundle`)} ${shellQuote(`${task.handoffRef}:${task.handoffRef}`)}`,
+      `git -C ${shellQuote(paths.repository)} checkout -q --detach ${shellQuote(task.handoffCommit)}`,
+    ].join(" && "),
+  );
+
+  await uploadRemoteRunFiles(task);
 }
 
 export async function observeRemoteWorkspace(
@@ -773,7 +891,7 @@ export async function launchRemoteRun(options: LaunchRemoteRunOptions): Promise<
     task.remoteHerdrCommand,
     task.herdrSession,
     paths.repository,
-    options.workspaceLabel,
+    `pi-remote-handoff: ${workspaceName(task.repoRoot, task.commonGitDir)}`,
     task.launchId,
     task.herdrVersion,
     remoteCommand(["exec", ...runnerArgs]),
@@ -887,7 +1005,7 @@ export async function settleUnstartedReservation(
   throw new Error(`Remote reservation settlement returned an invalid response: ${JSON.stringify(result.stdout)}`);
 }
 
-export async function remotePiEnvironmentProblems(
+async function remotePiEnvironmentProblems(
   task: StoppedTaskState,
   piVersion: string,
 ): Promise<RemotePiEnvironmentProblem[]> {
@@ -925,25 +1043,30 @@ export async function remotePiEnvironmentProblems(
   return problems;
 }
 
-export async function repairRemoteEnvironment(options: RepairRemoteEnvironmentOptions): Promise<void> {
-  if (options.problems.length === 0) return;
-  const paths = remoteWorkspacePaths(options.task);
-  const profile = options.problems.some(
+async function repairRemoteEnvironment(
+  task: StoppedTaskState,
+  piVersion: string,
+  problems: readonly RemotePiEnvironmentProblem[],
+  onProgress: (message: string) => void,
+): Promise<void> {
+  if (problems.length === 0) return;
+  const paths = remoteWorkspacePaths(task);
+  const profile = problems.some(
     (problem) => problem.startsWith("profile-") || problem === "authentication-missing",
   );
-  const runtime = options.problems.some((problem) => problem.startsWith("runtime-"));
+  const runtime = problems.some((problem) => problem.startsWith("runtime-"));
   const mode = profile && runtime ? "both" : profile ? "profile" : "runtime";
-  const authenticationMode = options.problems.includes("authentication-missing") ? "initial" : "preserve";
-  await scpTo(options.task.host, options.localPrepareProfileScript, paths.prepareProfile);
+  const authenticationMode = problems.includes("authentication-missing") ? "initial" : "preserve";
+  await scpTo(task.host, join(packageRoot, "remote", "prepare-profile.sh"), paths.prepareProfile);
   if (authenticationMode === "initial") {
     await scpTo(
-      options.task.host,
-      join(options.task.localDir, "auth-base.json"),
+      task.host,
+      join(task.localDir, "auth-base.json"),
       `${paths.control}/initial-auth.json`,
     );
   }
   await sshStreaming(
-    options.task.host,
+    task.host,
     [
       profile
         ? `test -f ${shellQuote(`${paths.control}/profile.tar.gz`)} || { printf 'The uploaded profile archive is missing.\\n' >&2; exit 1; }`
@@ -954,25 +1077,40 @@ export async function repairRemoteEnvironment(options: RepairRemoteEnvironmentOp
         `${paths.control}/profile.tar.gz`,
         paths.profile,
         paths.runtime,
-        options.piVersion,
+        piVersion,
         mode,
         authenticationMode,
       ]),
     ].join(" && "),
     (line) => {
-      if (line.startsWith(remoteProgressPrefix)) options.onProgress(line.slice(remoteProgressPrefix.length));
+      if (line.startsWith(remoteProgressPrefix)) onProgress(line.slice(remoteProgressPrefix.length));
     },
   );
 }
 
-export async function uploadRemoteRunFiles(options: UploadRemoteRunFilesOptions): Promise<void> {
-  const paths = remoteWorkspacePaths(options.task);
-  await scpTo(options.task.host, options.localRunner, paths.runner);
-  await scpTo(options.task.host, options.localCompanion, paths.companion);
+async function uploadRemoteRunFiles(
+  task: ReservedTaskState | RemoteOwnedTaskState,
+): Promise<void> {
+  const paths = remoteWorkspacePaths(task);
+  await scpTo(task.host, join(packageRoot, "remote", "runner.sh"), paths.runner);
+  await scpTo(task.host, join(packageRoot, "remote", "companion.ts"), paths.companion);
   await ssh(
-    options.task.host,
+    task.host,
     `chmod 700 ${shellQuote(paths.runner)} && chmod 600 ${shellQuote(paths.companion)} ${shellQuote(paths.session)}`,
   );
+}
+
+export async function prepareRemoteContinuation(
+  options: PrepareRemoteContinuationOptions,
+): Promise<void> {
+  const problems = await remotePiEnvironmentProblems(options.task, options.piVersion);
+  await repairRemoteEnvironment(
+    options.task,
+    options.piVersion,
+    problems,
+    options.onProgress,
+  );
+  await uploadRemoteRunFiles(options.task);
 }
 
 export async function downloadPreparedResult(task: PreparedTaskState): Promise<DownloadedPreparedResult> {
