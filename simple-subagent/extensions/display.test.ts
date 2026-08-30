@@ -65,9 +65,9 @@ test('renders one compact line per agent with only its latest tool call', () => 
     output,
     [
       'runSubAgents · job deadbeef · 1 done · 1 running · 1 failed · 1m23s',
-      '● alpha · sol · Ran npm test',
-      '✓ beta · claude-opus-5',
-      '✗ gamma · Wrote /tmp/out',
+      '● alpha · sol · medium · Ran npm test',
+      '✓ beta · claude-opus-5 · medium',
+      '✗ gamma · medium · Wrote /tmp/out',
     ].join('\n'),
   )
   assert.doesNotMatch(output, /old\.ts/)
@@ -84,7 +84,7 @@ test('renders agent names normally and model labels as accents', () => {
     },
   ]
 
-  const identity = '<text>reviewer</text><muted> · </muted><accent>sol</accent>'
+  const identity = '<text>reviewer</text><muted> · </muted><accent>sol</accent><muted> · </muted><dim>high</dim>'
   assert.ok(renderAgentsOverview(agents, taggedTheme).includes(identity))
   assert.ok(renderLiveCompact(agents, taggedTheme).includes(identity))
 })
@@ -129,7 +129,7 @@ test('renders completed usage on the agent line', () => {
     ),
     [
       'runSubAgents · 1/1 done',
-      '✓ reviewer · sol · 1 turn · 7.2k tokens (7.2k in, 8 out) · $0.0361',
+      '✓ reviewer · sol · low · 1 turn · 7.2k tokens (7.2k in, 8 out) · $0.0361',
       '  session 019f9304-4fcc-7587-a285-772db38d479f',
       "  pi --session '/tmp/reviewer-session.jsonl'",
     ].join('\n'),

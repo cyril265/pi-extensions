@@ -14,9 +14,9 @@ const TOOL_NAMES = [
   'collectSubagents',
 ]
 
-if (!parentPort) throw new Error('nodeScript worker requires a parent port')
+if (!parentPort) throw new Error('agentWorkflowScript worker requires a parent port')
 if (!workerData || typeof workerData.code !== 'string') {
-  throw new Error('nodeScript worker requires JavaScript source')
+  throw new Error('agentWorkflowScript worker requires JavaScript source')
 }
 
 const pending = new Map()
@@ -88,7 +88,7 @@ function formatReturnValue(value) {
   if (typeof value === 'string') return { returnOutput: value, returnType: 'string' }
   const json = JSON.stringify(value, null, 2)
   if (json === undefined) {
-    throw new Error('nodeScript must return a string or JSON-serializable value')
+    throw new Error('agentWorkflowScript must return a string or JSON-serializable value')
   }
   return { returnOutput: json, returnType: 'json' }
 }
@@ -97,8 +97,8 @@ async function run() {
   try {
     const context = vm.createContext({ tools, console: capturedConsole })
     const script = new vm.Script(
-      `(async function nodeScriptMain(tools, console) {\n"use strict";\n${workerData.code}\n})(tools, console)`,
-      { filename: 'nodeScript.js' },
+      `(async function agentWorkflowScriptMain(tools, console) {\n"use strict";\n${workerData.code}\n})(tools, console)`,
+      { filename: 'agentWorkflowScript.js' },
     )
     const value = await script.runInContext(context)
     if (pending.size > 0) {

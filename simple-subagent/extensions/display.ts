@@ -162,7 +162,8 @@ function renderAgentIdentity(agent: AgentDisplayInfo, theme: Theme): string {
   const modelLabel = model
     ? `${theme.fg('muted', ' · ')}${theme.fg('accent', model)}`
     : ''
-  return `${theme.fg('text', agent.name)}${modelLabel}`
+  const thinkingLabel = `${theme.fg('muted', ' · ')}${theme.fg('dim', agent.thinking)}`
+  return `${theme.fg('text', agent.name)}${modelLabel}${thinkingLabel}`
 }
 
 function renderStatusSummary(agents: AgentDisplayInfo[], theme: Theme): string {
@@ -251,7 +252,7 @@ export function renderAgentsOverview(
     const meta = showRuntime ? `${status} · ${session}${context}` : `${session}${context}`
     lines.push(
       '',
-      `${theme.fg('dim', `${index + 1}.`)} ${icon}${renderAgentIdentity(agent, theme)}${theme.fg('dim', ` · ${agent.thinking} · ${meta}`)}`,
+      `${theme.fg('dim', `${index + 1}.`)} ${icon}${renderAgentIdentity(agent, theme)}${theme.fg('dim', ` · ${meta}`)}`,
     )
     if (agent.cwd)
       lines.push(`   ${theme.fg('dim', 'cwd')} ${theme.fg('text', getCwdLabel(agent.cwd))}`)

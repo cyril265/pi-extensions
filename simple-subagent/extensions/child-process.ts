@@ -128,6 +128,7 @@ export async function runSubAgent(
   const messages: Message[] = []
   const tools: ToolDisplayItem[] = []
   const args = [
+    '--approve',
     '--mode',
     'json',
     '-p',

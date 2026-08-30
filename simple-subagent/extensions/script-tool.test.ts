@@ -44,7 +44,7 @@ async function runWorker(
     : result.consoleOutput || result.returnOutput
 }
 
-test('nodeScript runs sequential and conditional tool calls with prior results', async () => {
+test('agentWorkflowScript runs sequential and conditional tool calls with prior results', async () => {
   const calls: unknown[] = []
   const output = await runWorker(
     `
@@ -65,7 +65,7 @@ test('nodeScript runs sequential and conditional tool calls with prior results',
   assert.deepEqual(calls, [{ value: 'first' }, { value: 'first-second' }])
 })
 
-test('nodeScript sends Promise.all tool calls concurrently', async () => {
+test('agentWorkflowScript sends Promise.all tool calls concurrently', async () => {
   let active = 0
   let maxActive = 0
   const output = await runWorker(
@@ -90,7 +90,7 @@ test('nodeScript sends Promise.all tool calls concurrently', async () => {
   assert.equal(output, '[\n  "a",\n  "b",\n  "c"\n]')
 })
 
-test('nodeScript lets scripts catch bridge failures', async () => {
+test('agentWorkflowScript lets scripts catch bridge failures', async () => {
   const output = await runWorker(
     `
       try {
@@ -107,7 +107,7 @@ test('nodeScript lets scripts catch bridge failures', async () => {
   assert.equal(output, 'read failed')
 })
 
-test('nodeScript preserves console order before a JSON return value', async () => {
+test('agentWorkflowScript preserves console order before a JSON return value', async () => {
   const output = await runWorker(
     `
       console.log("first", 1)
@@ -120,14 +120,14 @@ test('nodeScript preserves console order before a JSON return value', async () =
   assert.equal(output, 'first 1\nsecond\n\n{\n  "ok": true\n}')
 })
 
-test('nodeScript fails on an uncaught script error', async () => {
+test('agentWorkflowScript fails on an uncaught script error', async () => {
   await assert.rejects(
     runWorker('throw new Error("broken")', async () => value('unused')),
     (error: unknown) => error instanceof NodeScriptWorkerError && error.message === 'broken',
   )
 })
 
-test('nodeScript aborts unresolved tool calls when the script returns', async () => {
+test('agentWorkflowScript aborts unresolved tool calls when the script returns', async () => {
   const controller = new AbortController()
   await assert.rejects(
     runWorker(
@@ -138,12 +138,12 @@ test('nodeScript aborts unresolved tool calls when the script returns', async ()
         }),
       controller,
     ),
-    /nodeScript returned with 1 unresolved tool call/,
+    /agentWorkflowScript returned with 1 unresolved tool call/,
   )
   assert.equal(controller.signal.aborted, true)
 })
 
-test('nodeScript abort terminates synchronous infinite code', { timeout: 2000 }, async () => {
+test('agentWorkflowScript abort terminates synchronous infinite code', { timeout: 2000 }, async () => {
   const controller = new AbortController()
   const run = runWorker('while (true) {}', async () => value('unused'), controller)
   setTimeout(() => controller.abort('stop'), 50)
@@ -268,7 +268,7 @@ test('stock bash receives the parent session environment', async () => {
   assert.equal(result.text, 'session-1:test-provider:test-model:high')
 })
 
-test('nodeScript truncates combined output and saves the complete text', async () => {
+test('agentWorkflowScript truncates combined output and saves the complete text', async () => {
   const output = Array.from({ length: 2001 }, (_, index) => `line ${index}`).join('\n')
   const limited = await limitNodeScriptOutput(output)
 
@@ -278,7 +278,7 @@ test('nodeScript truncates combined output and saves the complete text', async (
   assert.equal(await readFile(limited.fullOutputPath, 'utf8'), output)
 })
 
-test('nodeScript invokes the registered subagent definition', async () => {
+test('agentWorkflowScript invokes the registered subagent definition', async () => {
   let scriptTool: ToolDefinition<any, any> | undefined
   const pi = {
     registerTool(tool: ToolDefinition<any, any>) {
@@ -328,7 +328,7 @@ test('nodeScript invokes the registered subagent definition', async () => {
   assert.equal(typeof trace[0].durationMs, 'number')
 })
 
-test('nodeScript renders the complete JavaScript source', () => {
+test('agentWorkflowScript renders the complete JavaScript source', () => {
   let scriptTool: ToolDefinition<any, any> | undefined
   const pi = {
     registerTool(tool: ToolDefinition<any, any>) {
@@ -357,11 +357,11 @@ test('nodeScript renders the complete JavaScript source', () => {
     .join('\n')
     .replaceAll(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
 
-  assert.match(rendered, /nodeScript/)
+  assert.match(rendered, /agentWorkflowScript/)
   for (const line of code.split('\n')) assert.match(rendered, new RegExp(line))
 })
 
-test('managed children can use nodeScript while subagent calls stay locked', async () => {
+test('managed children can use agentWorkflowScript while subagent calls stay locked', async () => {
   const tools: ToolDefinition<any, any>[] = []
   const pi = {
     registerTool(tool: ToolDefinition<any, any>) {
@@ -376,7 +376,7 @@ test('managed children can use nodeScript while subagent calls stay locked', asy
     modelAliases: {},
   })
   registerNodeScriptTool(pi, integration)
-  const scriptTool = tools.find(tool => tool.name === 'nodeScript')
+  const scriptTool = tools.find(tool => tool.name === 'agentWorkflowScript')
   assert.ok(scriptTool)
 
   const cwd = await mkdtemp(join(tmpdir(), 'node-script-managed-child-'))
@@ -406,7 +406,7 @@ test('managed children can use nodeScript while subagent calls stay locked', asy
   })
 })
 
-test('nodeScript collect uses the real registered JobRegistry', async () => {
+test('agentWorkflowScript collect uses the real registered JobRegistry', async () => {
   const tools: ToolDefinition<any, any>[] = []
   const pi = {
     registerTool(tool: ToolDefinition<any, any>) {
@@ -421,7 +421,7 @@ test('nodeScript collect uses the real registered JobRegistry', async () => {
     modelAliases: {},
   })
   registerNodeScriptTool(pi, integration)
-  const scriptTool = tools.find(tool => tool.name === 'nodeScript')
+  const scriptTool = tools.find(tool => tool.name === 'agentWorkflowScript')
   assert.ok(scriptTool)
 
   const cwd = await mkdtemp(join(tmpdir(), 'pi-script-real-jobs-'))

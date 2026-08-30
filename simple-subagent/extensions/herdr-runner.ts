@@ -309,6 +309,7 @@ function getChildEnvironment(agent: SpawnedHerdrAgent): Record<string, string> {
 
 function getChildArguments(agent: SpawnedHerdrAgent): string[] {
   return [
+    '--approve',
     '--session',
     agent.sessionPath,
     '--name',

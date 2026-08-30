@@ -2,6 +2,24 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-08-30 18:47
+
+### simple-subagent
+
+- Renamed the `nodeScript` tool to `agentWorkflowScript` and clarified when workflows should pass stock-tool output directly into subagent calls.
+
+## 2026-08-23 21:55
+
+### simple-subagent
+
+- Moved the thinking level into the shared agent identity so the live job widget and compact results render `name · model · thinking` like the tool call overview already did.
+
+## 2026-08-23 20:38
+
+### simple-subagent
+
+- Passed `--approve` to spawned subagent processes so Herdr panes no longer show the project trust prompt and headless subagents load project `.pi` resources like the parent session.
+
 ## 2026-08-21 23:05
 
 ### simple-subagent

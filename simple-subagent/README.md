@@ -5,7 +5,7 @@ Pi extension for asynchronous subagents:
 - `runSubAgents({ agents: [...] })` dispatches isolated agents and immediately returns an 8-character job ID and session keys
 - `collectSubagents({ jobId })` waits for results not already delivered
 - `runSubAgentsWithContext({ agents: [...] })` asynchronously forks the parent context; disabled by default
-- `nodeScript({ code })` runs trusted one-shot JavaScript that composes Pi's stock tools and isolated subagents
+- `agentWorkflowScript({ code })` runs trusted one-shot JavaScript that composes Pi's stock tools and isolated subagents
 - `/subagents` opens a running-job picker with cancellation; `/subagents cancel <jobId>` is the scriptable path
 
 When a job settles, uncollected results are pushed into the parent conversation. Pi queues the
@@ -104,9 +104,9 @@ The projection ends when the server exits or the companion plugin is disabled or
 - results of 2048 characters or fewer are inlined alongside the result path
 - `cwd`: working directory for child pi run
 
-## nodeScript
+## agentWorkflowScript
 
-`nodeScript` runs its `code` as an async JavaScript function body in a fresh worker. The worker
+`agentWorkflowScript` runs its `code` as an async JavaScript function body in a fresh worker. The worker
 has a frozen `tools` object and a captured `console` object. It has no Pi imports or persistent
 state. The tool call always displays the complete script with JavaScript syntax highlighting.
 The result starts with one status and timing line, renders console output in muted text, and
@@ -168,21 +168,21 @@ indented JSON. Omitting a return or returning `undefined` fails. Captured consol
 before the returned value. Combined output is limited to 2000 lines or 50KB. When it exceeds
 either limit, the result includes the path to a temporary file containing the complete output.
 
-`nodeScript` is not a security sandbox. Run only code you trust. Nested native calls use Pi's stock
+`agentWorkflowScript` is not a security sandbox. Run only code you trust. Nested native calls use Pi's stock
 implementations with the parent `cwd` and effective image and shell settings. They do not use
 active or overridden tool instances. They also bypass active-tool restrictions, permission
-extensions, and nested `tool_call` or `tool_result` hooks. The outer `nodeScript` call still uses
+extensions, and nested `tool_call` or `tool_result` hooks. The outer `agentWorkflowScript` call still uses
 Pi's normal tool lifecycle.
 
 Pressing Escape terminates the worker and aborts active native calls. A waiting
 `collectSubagents` call is removed, but dispatched subagent jobs keep running. Session shutdown
 also terminates workers, then applies simple-subagent's existing behavior of cancelling all jobs.
-If a script returns while one of its tool promises is unresolved, `nodeScript` aborts those calls
+If a script returns while one of its tool promises is unresolved, `agentWorkflowScript` aborts those calls
 and fails.
 
 Collection keeps the existing winner-takes-result behavior. A collector that is waiting first gets
 the result. If push delivery wins first, a later collect reports that no undelivered result remains.
-`runSubAgentsWithContext`, extension tools, and MCP tools are not available inside `nodeScript`.
+`runSubAgentsWithContext`, extension tools, and MCP tools are not available inside `agentWorkflowScript`.
 
 ## Isolated subagent behavior
 
@@ -197,7 +197,7 @@ in the workspace are closed while active panes remain. Workspace setup uses a ke
 that is released if the launcher crashes.
 
 During its parent-assigned run, a subagent cannot call `runSubAgents`, `collectSubagents`, or
-`runSubAgentsWithContext`. `nodeScript` remains available, but its nested `runSubAgents` and
+`runSubAgentsWithContext`. `agentWorkflowScript` remains available, but its nested `runSubAgents` and
 `collectSubagents` calls hit the same lock. Once the run settles, the subagent tools become
 available in the retained Herdr pane for normal interactive continuation. Their schemas remain
 active while execution is locked so the provider prompt-cache prefix does not change at

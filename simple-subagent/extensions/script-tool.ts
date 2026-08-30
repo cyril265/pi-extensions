@@ -150,7 +150,10 @@ function restoreWorkerError(error: SerializedError, consoleOutput: string): Node
 
 function cancellationError(reason: unknown): Error {
   if (reason instanceof Error) return reason
-  return new DOMException(typeof reason === 'string' ? reason : 'nodeScript aborted', 'AbortError')
+  return new DOMException(
+    typeof reason === 'string' ? reason : 'agentWorkflowScript aborted',
+    'AbortError',
+  )
 }
 
 function textFromContent(content: NodeScriptContentBlock[]): string {
@@ -301,7 +304,7 @@ export function runNodeScriptWorker(options: NodeScriptWorkerOptions): Promise<N
         case 'unresolved':
           finishFailure(
             new NodeScriptWorkerError(
-              `nodeScript returned with ${message.count} unresolved tool call${message.count === 1 ? '' : 's'}`,
+              `agentWorkflowScript returned with ${message.count} unresolved tool call${message.count === 1 ? '' : 's'}`,
               message.consoleOutput,
             ),
           )
@@ -312,7 +315,10 @@ export function runNodeScriptWorker(options: NodeScriptWorkerOptions): Promise<N
       finishFailure(error instanceof Error ? error : new Error(String(error))),
     )
     worker.on('exit', code => {
-      if (!settling) finishFailure(new Error(`nodeScript worker exited before completion with code ${code}`))
+      if (!settling)
+        finishFailure(
+          new Error(`agentWorkflowScript worker exited before completion with code ${code}`),
+        )
     })
 
     if (options.controller.signal.aborted) onAbort()
@@ -324,7 +330,7 @@ export async function limitNodeScriptOutput(output: string): Promise<LimitedOutp
   const truncation = truncateHead(output)
   if (!truncation.truncated) return { text: output }
 
-  const directory = await mkdtemp(join(tmpdir(), 'node-script-'))
+  const directory = await mkdtemp(join(tmpdir(), 'agent-workflow-script-'))
   const fullOutputPath = join(directory, 'output.txt')
   await writeFile(fullOutputPath, output, 'utf8')
 
@@ -407,20 +413,28 @@ export function registerNodeScriptTool(
   const parameters = Type.Object({
     code: Type.String({
       description:
-        'Trusted JavaScript async function body. Use await tools.<name>({ ... }). Return a string or JSON-serializable value; omitting return or returning undefined fails. Console output is prepended to the returned value.',
+        'Trusted async JavaScript function body. Call tools with await tools.<name>({ ... }). Each call returns { text, content, details }; use text for string processing and content for structured text or image blocks. Return a string or JSON-serializable value. Missing or undefined returns fail.',
     }),
   })
 
   pi.registerTool({
-    name: 'nodeScript',
-    label: 'nodeScript',
+    name: 'agentWorkflowScript',
+    label: 'agentWorkflowScript',
     description:
-      'Run js calling read, write, edit, bash, grep, find, ls, runSubAgents, and collectSubagents when code must pass tool results between calls or fan out subagents. Calls resolve to { text, content, details } and reject on failure. No Node globals; Use bash, direct or parallel tools otherwise.',
-    promptSnippet: 'compose tool calls with runSubAgents',
+      'Run trusted JavaScript when one supported tool call must consume another call result. This includes reading a prompt or template before calling runSubAgents. Keep dependent calls inside one agentWorkflowScript invocation. Available tools are read, write, edit, bash, grep, find, ls, runSubAgents, and collectSubagents. The worker has no Node globals.',
+    promptSnippet:
+      'Pass stock-tool results into subagent calls within one JavaScript workflow',
+    promptGuidelines: [
+      'Use agentWorkflowScript instead of separate parent-level calls whenever output from read, bash, grep, find, or ls will be passed to runSubAgents.',
+      'For prompt-template workflows, agentWorkflowScript must call tools.read and pass readResult.text to tools.runSubAgents in the same script. Do not read the template outside agentWorkflowScript or copy its contents into the code argument.',
+      'Use direct tools only when no later tool call will consume their result.',
+      'In agentWorkflowScript, consume textual tool output through result.text. result.content is an array of text and image blocks, not a string.',
+      'In agentWorkflowScript, await or return every started tool call. Use Promise.all only when calls are independent.',
+    ],
     parameters,
     renderCall(args, theme) {
       return new Text(
-        `${theme.fg('toolTitle', theme.bold('nodeScript'))}\n${highlightCode(args.code, 'javascript').join('\n')}`,
+        `${theme.fg('toolTitle', theme.bold('agentWorkflowScript'))}\n${highlightCode(args.code, 'javascript').join('\n')}`,
         0,
         0,
       )
