@@ -7,6 +7,7 @@ All notable changes to this repository are documented here.
 ### simple-subagent
 
 - Renamed the `nodeScript` tool to `agentWorkflowScript` and clarified when workflows should pass stock-tool output directly into subagent calls.
+- Told `runSubAgents` callers to use `collectSubagents` only when waiting for one of several independent jobs.
 
 ## 2026-08-23 21:55
 
