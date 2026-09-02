@@ -413,7 +413,7 @@ export function registerNodeScriptTool(
   const parameters = Type.Object({
     code: Type.String({
       description:
-        'Trusted async JavaScript function body. Call tools with await tools.<name>({ ... }). Each call returns { text, content, details }; use text for string processing and content for structured text or image blocks. Return a string or JSON-serializable value. Missing or undefined returns fail.',
+        'Async JavaScript function body. Call tools with await tools.<name>({ ... }). Calls return { text, content, details }; use text for string processing and content for text or image blocks. Return a string or JSON-serializable value. Returning undefined fails.',
     }),
   })
 
@@ -421,14 +421,12 @@ export function registerNodeScriptTool(
     name: 'agentWorkflowScript',
     label: 'agentWorkflowScript',
     description:
-      'Run trusted JavaScript when one supported tool call must consume another call result. This includes reading a prompt or template before calling runSubAgents. Keep dependent calls inside one agentWorkflowScript invocation. Available tools are read, write, edit, bash, grep, find, ls, runSubAgents, and collectSubagents. The worker has no Node globals.',
+      'Run JavaScript when one supported tool call must consume another call result. This includes reading a prompt or template before calling runSubAgents. Keep dependent calls inside one agentWorkflowScript invocation. Available tools are read, write, edit, bash, grep, find, ls, runSubAgents, and collectSubagents. The worker has no Node globals.',
     promptSnippet:
-      'Pass stock-tool results into subagent calls within one JavaScript workflow',
+      "Chain tool calls when one depends on another's result",
     promptGuidelines: [
-      'Use agentWorkflowScript instead of separate parent-level calls whenever output from read, bash, grep, find, or ls will be passed to runSubAgents.',
-      'For prompt-template workflows, agentWorkflowScript must call tools.read and pass readResult.text to tools.runSubAgents in the same script. Do not read the template outside agentWorkflowScript or copy its contents into the code argument.',
-      'Use direct tools only when no later tool call will consume their result.',
-      'In agentWorkflowScript, consume textual tool output through result.text. result.content is an array of text and image blocks, not a string.',
+      'For prompt-template workflows, read the template with tools.read inside agentWorkflowScript and pass readResult.text to tools.runSubAgents.',
+      'Use direct tools when the agent must inspect or interpret an intermediate result.',
       'In agentWorkflowScript, await or return every started tool call. Use Promise.all only when calls are independent.',
     ],
     parameters,

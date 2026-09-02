@@ -252,3 +252,14 @@ Enable the separate fork tool with `enableForkTool` in `~/.pi/agent/simple-subag
 - each fork reports first-turn parent-cache usage explicitly without conflating cache telemetry with child execution success
 
 - `/forkTab` forks the current session into a new interactive Herdr tab, inherits the model and thinking level, and sends no prompt
+
+## Prompting evals
+
+The prompting evals run Pi with `openai-codex/gpt-5.6-sol` at medium thinking and verify which
+tool it calls. The cases cover dependent handoffs, coding work the parent must inspect, and
+independent parent and subagent calls. They block tool execution after capturing the call, so they
+do not start subagents or run generated scripts. Each scenario runs three times.
+
+```bash
+npm run test:prompting
+```

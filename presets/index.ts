@@ -41,7 +41,7 @@
 
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { getSupportedThinkingLevels, type ModelThinkingLevel } from '@earendil-works/pi-ai'
+import type { ModelThinkingLevel } from '@earendil-works/pi-ai'
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { DynamicBorder, getAgentDir } from '@earendil-works/pi-coding-agent'
 import {
@@ -78,10 +78,6 @@ interface Preset {
 
 interface PresetsConfig {
   [name: string]: Preset
-}
-
-function getAvailableThinkingLevels(ctx: ExtensionContext): ThinkingLevel[] {
-  return ctx.model ? getSupportedThinkingLevels(ctx.model) : ['off']
 }
 
 /**
@@ -399,62 +395,6 @@ export default function presetExtension(pi: ExtensionAPI) {
     }
   }
 
-  async function showThinkingSelector(ctx: ExtensionContext): Promise<void> {
-    const availableLevels = getAvailableThinkingLevels(ctx)
-    const items: SelectItem[] = availableLevels.map(level => ({
-      value: level,
-      label: level,
-      description: `Set thinking level to ${level}`,
-    }))
-    const currentThinkingLevel = pi.getThinkingLevel()
-
-    const result = await ctx.ui.custom<ThinkingLevel | null>((tui, theme, _kb, done) => {
-      const container = new Container()
-      container.addChild(new DynamicBorder(str => theme.fg('accent', str)))
-
-      container.addChild(new Text(theme.fg('accent', theme.bold('Select Thinking Level'))))
-
-      const selectList = new SelectList(items, items.length, {
-        selectedPrefix: text => theme.fg('accent', text),
-        selectedText: text => theme.fg('accent', text),
-        description: text => theme.fg('muted', text),
-        scrollInfo: text => theme.fg('dim', text),
-        noMatch: text => theme.fg('warning', text),
-      })
-      const selectedIndex = availableLevels.indexOf(currentThinkingLevel)
-      if (selectedIndex !== -1) {
-        selectList.setSelectedIndex(selectedIndex)
-      }
-
-      selectList.onSelect = item => done(item.value as ThinkingLevel)
-      selectList.onCancel = () => done(null)
-
-      container.addChild(selectList)
-
-      container.addChild(new Text(theme.fg('dim', '↑↓ navigate • enter select • esc cancel')))
-
-      container.addChild(new DynamicBorder(str => theme.fg('accent', str)))
-
-      return {
-        render(width: number) {
-          return container.render(width)
-        },
-        invalidate() {
-          container.invalidate()
-        },
-        handleInput(data: string) {
-          selectList.handleInput(data)
-          tui.requestRender()
-        },
-      }
-    })
-
-    if (!result) return
-
-    pi.setThinkingLevel(result)
-    ctx.ui.notify(`Thinking level set to ${pi.getThinkingLevel()}`, 'info')
-  }
-
   /**
    * Update status indicator.
    */
@@ -543,30 +483,6 @@ export default function presetExtension(pi: ExtensionAPI) {
 
       // Otherwise show selector
       await showPresetSelector(ctx)
-    },
-  })
-
-  pi.registerCommand('thinking', {
-    description: 'Set thinking level',
-    handler: async (args, ctx) => {
-      const level = args?.trim()
-
-      if (!level) {
-        await showThinkingSelector(ctx)
-        return
-      }
-
-      const availableLevels = getAvailableThinkingLevels(ctx)
-      if (!availableLevels.includes(level as ThinkingLevel)) {
-        ctx.ui.notify(
-          `Thinking level "${level}" is unavailable for the current model. Available: ${availableLevels.join(', ')}`,
-          'error',
-        )
-        return
-      }
-
-      pi.setThinkingLevel(level as ThinkingLevel)
-      ctx.ui.notify(`Thinking level set to ${pi.getThinkingLevel()}`, 'info')
     },
   })
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 
 type CommandHandler = (args: string[]) => void;
@@ -151,16 +151,18 @@ function newCommand(args: string[]) {
   info(`Creating ${inline(branch)} from ${inline(base)}...`);
   runGit(repoRoot, ["worktree", "add", "--no-track", "-b", branch, worktreePath, base]);
 
+  const createdWorktreePath = requireWorktreePath(repoRoot, branch);
   configureBranchRemote(repoRoot, branch);
-  copyRiderSettings(repoRoot, worktreePath);
+  copyRiderSettings(repoRoot, createdWorktreePath);
+  copyFrontendDependencies(repoRoot, createdWorktreePath);
 
   print([
     `${color.green}Created${color.reset} ${inline(branch)}`,
-    `  Path:   ${worktreePath}`,
-    `  Agent:  cd ${shellEscape(worktreePath)} && pi`,
+    `  Path:   ${createdWorktreePath}`,
+    `  Agent:  cd ${shellEscape(createdWorktreePath)} && pi`,
   ]);
 
-  prefillTerminalInput(`cd ${shellEscape(worktreePath)}`);
+  prefillTerminalInput(`cd ${shellEscape(createdWorktreePath)}`);
 }
 
 function cloneCommand(args: string[]) {
@@ -198,18 +200,20 @@ function cloneCommand(args: string[]) {
     runGit(repoRoot, ["worktree", "add", "--no-track", "-b", branch, worktreePath, remoteBranch]);
   }
 
+  const createdWorktreePath = requireWorktreePath(repoRoot, branch);
   configureBranchRemote(repoRoot, branch);
-  copyRiderSettings(repoRoot, worktreePath);
+  copyRiderSettings(repoRoot, createdWorktreePath);
+  copyFrontendDependencies(repoRoot, createdWorktreePath);
 
   print([
     restoringExistingBranch
       ? `${color.green}Restored${color.reset} ${inline(branch)}`
       : `${color.green}Cloned${color.reset} ${inline(remoteBranch)} as ${inline(branch)}`,
-    `  Path:   ${worktreePath}`,
-    `  Agent:  cd ${shellEscape(worktreePath)} && pi`,
+    `  Path:   ${createdWorktreePath}`,
+    `  Agent:  cd ${shellEscape(createdWorktreePath)} && pi`,
   ]);
 
-  prefillTerminalInput(`cd ${shellEscape(worktreePath)}`);
+  prefillTerminalInput(`cd ${shellEscape(createdWorktreePath)}`);
 }
 
 function listCommand(args: string[]) {
@@ -574,6 +578,86 @@ function requireWorktree(context: BranchContext) {
   return context.worktree;
 }
 
+function requireWorktreePath(repoRoot: string, branch: string) {
+  const worktree = findWorktreeByBranch(repoRoot, branch);
+  if (!worktree) {
+    fail(`Created worktree for ${inline(branch)} was not found.`);
+  }
+
+  return worktree.path;
+}
+
+function copyFrontendDependencies(sourceRoot: string, targetRoot: string) {
+  const targetFrontend = join(targetRoot, "frontend");
+  const targetLockfile = join(targetFrontend, "package-lock.json");
+  const targetNodeModules = join(targetFrontend, "node_modules");
+
+  if (!existsSync(targetLockfile) || existsSync(targetNodeModules)) {
+    return;
+  }
+
+  const lockfile = readFileSync(targetLockfile);
+  const candidatePaths = [sourceRoot, ...getWorktrees(sourceRoot).map((worktree) => worktree.path)];
+  const seenPaths = new Set<string>();
+  let donorNodeModules: string | null = null;
+
+  for (const candidatePath of candidatePaths) {
+    if (candidatePath === targetRoot || seenPaths.has(candidatePath)) {
+      continue;
+    }
+    seenPaths.add(candidatePath);
+
+    const candidateFrontend = join(candidatePath, "frontend");
+    const candidateLockfile = join(candidateFrontend, "package-lock.json");
+    const candidateNodeModules = join(candidateFrontend, "node_modules");
+    const installedLockfile = join(candidateNodeModules, ".package-lock.json");
+
+    if (!existsSync(candidateLockfile) || !existsSync(candidateNodeModules) || !existsSync(installedLockfile)) {
+      continue;
+    }
+
+    const nodeModulesStats = lstatSync(candidateNodeModules);
+    if (!nodeModulesStats.isDirectory() || nodeModulesStats.isSymbolicLink()) {
+      continue;
+    }
+
+    if (!lockfile.equals(readFileSync(candidateLockfile))) {
+      continue;
+    }
+
+    if (nodeModulesStats.dev !== statSync(targetFrontend).dev) {
+      continue;
+    }
+
+    donorNodeModules = candidateNodeModules;
+    break;
+  }
+
+  if (!donorNodeModules || process.platform !== "darwin") {
+    printFrontendInstallInstruction(targetFrontend);
+    return;
+  }
+
+  const stagingRoot = mkdtempSync(join(targetFrontend, ".wt-node_modules-"));
+  const stagedNodeModules = join(stagingRoot, "node_modules");
+  const result = spawnSync("/bin/cp", ["-cR", donorNodeModules, stagedNodeModules], { stdio: "inherit" });
+
+  if (result.status !== 0) {
+    rmSync(stagingRoot, { recursive: true, force: true });
+    warning("Could not clone frontend/node_modules with APFS copy-on-write.");
+    printFrontendInstallInstruction(targetFrontend);
+    return;
+  }
+
+  renameSync(stagedNodeModules, targetNodeModules);
+  rmSync(stagingRoot, { recursive: true, force: true });
+  info(`Cloned ${inline("frontend/node_modules")} from ${inline(dirname(dirname(donorNodeModules)))} with APFS copy-on-write.`);
+}
+
+function printFrontendInstallInstruction(targetFrontend: string) {
+  info(`No matching frontend dependencies were cloned. Run ${inline(`cd ${shellEscape(targetFrontend)} && npm install`)}.`);
+}
+
 function copyRiderSettings(sourceRoot: string, targetRoot: string) {
   let copied = copyRiderSettingsFromIdeaPath(join(sourceRoot, ".idea"), join(targetRoot, ".idea"));
 
@@ -774,6 +858,10 @@ function inline(value: string) {
 
 function info(message: string) {
   console.log(`${color.cyan}›${color.reset} ${message}`);
+}
+
+function warning(message: string) {
+  console.warn(`${color.yellow}warning${color.reset}: ${message}`);
 }
 
 function print(lines: string[]) {

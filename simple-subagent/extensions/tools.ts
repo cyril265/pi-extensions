@@ -238,9 +238,9 @@ export function registerSubagentTools(
     name: 'runSubAgents',
     label: 'Run Subagents',
     description: `
-        Dispatch isolated subagents and return a job ID plus session keys immediately. A subagent has no knowledge of the parent context, so provide complete instructions. Continue independent work after dispatch. Don't call collectSubagents unless you have multiple independent jobs and need to wait for one; otherwise end turn and results are delivered automatically.
-        A job settles only when ALL its agents finish. Batch agents into one call only when you need their results together; dispatch separate calls for independently actionable tasks so each result arrives as soon as it is ready.
-        sessionKey: Optional reusable session name. If omitted, a durable name-based key with an 8-character mixed-case alphanumeric suffix is generated and returned. Reuse a key only for follow-up work that benefits from its existing context, and use distinct keys for agents in the same call.
+        Dispatch self-contained work to isolated subagents and return a job ID plus session keys immediately. A subagent does not receive the parent context, so its prompt must include all required context. Continue independent work after dispatch. If nothing remains, end the turn. Results are delivered automatically.
+        Results from one call are delivered only after every agent finishes. Batch agents only when you need their results together; dispatch separate calls for independently actionable tasks so each result arrives as soon as it is ready.
+        sessionKey: Choose a key for a new or existing child session, or omit it to generate one. Reuse a key when follow-up work should continue with the existing session context, and use distinct keys within one call.
         overrideModel: ${Object.keys(config.modelAliases).length > 0 ? `options ${Object.keys(config.modelAliases).join(', ')}` : 'use provider/model'}
         thinking: low|medium|high|xhigh|max
         `,
@@ -301,7 +301,7 @@ export function registerSubagentTools(
               text: [
                 `Subagents dispatched. jobId: ${job.id}`,
                 ...job.agents.map(agent => `${agent.name} sessionKey: ${agent.sessionKey}`),
-                `Collect with collectSubagents({ jobId: "${job.id}" }).`,
+                `Results will be delivered automatically. Call collectSubagents({ jobId: "${job.id}" }) only if this result must feed another tool call before the current turn ends.`,
               ].join('\n'),
             },
           ],
@@ -333,8 +333,7 @@ export function registerSubagentTools(
   > = {
     name: 'collectSubagents',
     label: 'Collect Subagents',
-    description:
-      'Wait for a dispatched subagent job and return results that have not already been delivered. Cancelling this tool does not cancel the job.',
+    description: 'Wait for a subagent job and return its undelivered result.',
     parameters: collectSubagentsParameters,
     renderCall(args, theme) {
       return new Text(
@@ -395,9 +394,9 @@ export function registerSubagentTools(
     label: 'Run Subagents With Context',
     description: `
       Fork the parent context into parallel subagents and return a job ID plus session keys immediately. Use only when requested.
-      A job settles only when ALL its agents finish. Batch agents into one call only when you need their results together; dispatch separate calls for independently actionable tasks so each result arrives as soon as it is ready.
+      Results from one call are delivered only after every agent finishes. Batch agents only when you need their results together; dispatch separate calls for independently actionable tasks so each result arrives as soon as it is ready.
       Each child inherits and locks the parent's cwd, provider/model, and thinking level.
-      sessionKey: Optional reusable fork name. If omitted, a durable name-based key with an 8-character mixed-case alphanumeric suffix is generated and returned.
+      sessionKey: Choose a key for a new or existing fork, or omit it to generate one.
     `,
     parameters: runSubAgentsWithContextParameters,
     renderCall(args, theme) {
@@ -472,7 +471,7 @@ export function registerSubagentTools(
             text: [
               `Forked subagents scheduled. jobId: ${jobId}`,
               ...agents.map(agent => `${agent.name} sessionKey: ${agent.sessionKey}`),
-              `Collect with collectSubagents({ jobId: "${jobId}" }).`,
+              'Results will be delivered automatically.',
             ].join('\n'),
           },
         ],

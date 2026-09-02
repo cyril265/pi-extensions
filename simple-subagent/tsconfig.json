@@ -9,5 +9,5 @@
     "types": ["node"],
     "allowImportingTsExtensions": true
   },
-  "include": ["index.ts", "extensions/**/*.ts", "herdr/**/*.ts"]
+  "include": ["index.ts", "extensions/**/*.ts", "herdr/**/*.ts", "evals/**/*.ts"]
 }

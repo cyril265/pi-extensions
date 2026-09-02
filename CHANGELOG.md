@@ -2,12 +2,32 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-09-02
+
+### simple-subagent
+
+- Refined tool guidance so direct tools handle intermediate results the parent must inspect, while `agentWorkflowScript` handles dependent tool chains.
+- Clarified automatic result delivery, when to call `collectSubagents`, how to write self-contained prompts, and when to reuse session keys.
+- Added real-model prompting evals covering dependent workflows, direct coding work, and independent parent and subagent calls.
+
 ## 2026-08-30 18:47
 
 ### simple-subagent
 
 - Renamed the `nodeScript` tool to `agentWorkflowScript` and clarified when workflows should pass stock-tool output directly into subagent calls.
 - Told `runSubAgents` callers to use `collectSubagents` only when waiting for one of several independent jobs.
+
+## 2026-08-27 17:37
+
+### worktree
+
+- Reused matching frontend dependencies in new worktrees through APFS copy-on-write clones instead of creating another physical `node_modules` copy.
+
+## 2026-08-25
+
+### presets
+
+- Removed the custom `/thinking` command.
 
 ## 2026-08-23 21:55
 

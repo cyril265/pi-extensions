@@ -2,7 +2,7 @@
 
 `wt` is a tiny Node script that wraps `git worktree` for branch-per-task work.
 
-**Requirements:** Git, Node 22.18+ (for built-in TypeScript type stripping), and Perl for the `cd` prefill.
+**Requirements:** Git, Node 22.18+ (for built-in TypeScript type stripping), and Perl for the `cd` prefill. Copy-on-write dependency reuse requires macOS and APFS.
 
 **Install:** symlink `wt.mts` as `wt` into your `PATH`, e.g. `ln -s "$PWD/wt.mts" ~/.local/bin/wt`.
 The extension has to stay on the real file: Node only strips types from `.ts`/`.mts` files.
@@ -21,7 +21,10 @@ Compared to plain `git worktree add`, it also:
 - prefills `cd <path>` in interactive terminals after `wt new` and `wt clone`
 - copies useful Rider `.idea` settings into the new worktree
 - sanitizes copied Rider VCS mappings and attached-folder layout for the new worktree
+- clones `frontend/node_modules` from an existing worktree with the same `package-lock.json` using APFS copy-on-write
 - can print a worktree path, run a command in it, or remove it by branch name
+
+Dependency reuse keeps each worktree's `node_modules` independent while sharing its unchanged disk blocks. `wt` only uses a donor with npm's `node_modules/.package-lock.json`, an identical root lockfile, and the same filesystem. If none exists, it prints the `npm install` command for the new worktree.
 
 ## Usage
 
