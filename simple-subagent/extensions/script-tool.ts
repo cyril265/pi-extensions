@@ -38,7 +38,7 @@ export const NODE_SCRIPT_TOOL_NAMES = [
   'find',
   'ls',
   'runSubAgents',
-  'collectSubagents',
+  'joinSubAgents',
 ] as const
 
 export type NodeScriptToolName = (typeof NODE_SCRIPT_TOOL_NAMES)[number]
@@ -190,7 +190,7 @@ export async function invokePiTool(
 
 export function createNativeNodeScriptTools(
   ctx: ExtensionContext,
-): Record<Exclude<NodeScriptToolName, 'runSubAgents' | 'collectSubagents'>, ToolDefinition<any, any>> {
+): Record<Exclude<NodeScriptToolName, 'runSubAgents' | 'joinSubAgents'>, ToolDefinition<any, any>> {
   const settings = SettingsManager.create(ctx.cwd, undefined, {
     projectTrusted: ctx.isProjectTrusted(),
   })
@@ -421,12 +421,13 @@ export function registerNodeScriptTool(
     name: 'agentWorkflowScript',
     label: 'agentWorkflowScript',
     description:
-      'Run JavaScript when one supported tool call must consume another call result. This includes reading a prompt or template before calling runSubAgents. Keep dependent calls inside one agentWorkflowScript invocation. Available tools are read, write, edit, bash, grep, find, ls, runSubAgents, and collectSubagents. The worker has no Node globals.',
+      'Run JavaScript for a mechanical handoff when one supported tool result can feed another call without parent interpretation. This includes loading a prompt template before calling runSubAgents. Keep the handoff inside one agentWorkflowScript invocation. Available tools are read, write, edit, bash, grep, find, ls, runSubAgents, and joinSubAgents. The worker has no Node globals.',
     promptSnippet:
-      "Chain tool calls when one depends on another's result",
+      'Mechanically pass one tool result into another call',
     promptGuidelines: [
       'For prompt-template workflows, read the template with tools.read inside agentWorkflowScript and pass readResult.text to tools.runSubAgents.',
-      'Use direct tools when the agent must inspect or interpret an intermediate result.',
+      'In agentWorkflowScript, join a dispatched job with tools.joinSubAgents({ jobId: runSubAgentsResult.details.jobId }) when a later call needs its result. runSubAgentsResult.text is display text, not JSON.',
+      'Use direct tools for coding, debugging, or any step where the agent must inspect or interpret an intermediate result.',
       'In agentWorkflowScript, await or return every started tool call. Use Promise.all only when calls are independent.',
     ],
     parameters,
@@ -449,7 +450,7 @@ export function registerNodeScriptTool(
       const definitions: Record<NodeScriptToolName, ToolDefinition<any, any>> = {
         ...createNativeNodeScriptTools(ctx),
         runSubAgents: subagentTools.runSubAgentsTool,
-        collectSubagents: subagentTools.collectSubagentsTool,
+        joinSubAgents: subagentTools.joinSubAgentsTool,
       }
       const controller = new AbortController()
       const trace: NodeScriptTraceEntry[] = []

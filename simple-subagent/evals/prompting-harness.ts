@@ -15,6 +15,11 @@ export type ToolCall = {
   args: unknown
 }
 
+export type PromptRun = {
+  events: unknown[]
+  toolCalls: ToolCall[]
+}
+
 type ToolExecutionStart = {
   type: 'tool_execution_start'
   toolName: string
@@ -34,7 +39,7 @@ function isToolExecutionStart(event: unknown): event is ToolExecutionStart {
   )
 }
 
-function parseToolCalls(output: string): ToolCall[] {
+function parseEvents(output: string): unknown[] {
   return output
     .split('\n')
     .filter(line => line.trim())
@@ -42,18 +47,48 @@ function parseToolCalls(output: string): ToolCall[] {
       const event: unknown = JSON.parse(line)
       return event
     })
+}
+
+function parseToolCalls(events: unknown[]): ToolCall[] {
+  return events
     .filter(isToolExecutionStart)
     .map(event => ({ toolName: event.toolName, args: event.args }))
 }
 
-export function runPrompt(cwd: string, prompt: string): Promise<ToolCall[]> {
+function getEnvironment(): NodeJS.ProcessEnv {
+  const env = { ...process.env }
+  for (const name of [
+    'HERDR_BIN_PATH',
+    'HERDR_ENV',
+    'HERDR_PANE_ID',
+    'HERDR_SOCKET_PATH',
+    'HERDR_TAB_ID',
+    'HERDR_WORKSPACE_ID',
+  ]) {
+    delete env[name]
+  }
+  return env
+}
+
+function runPi(
+  cwd: string,
+  prompt: string,
+  session: { kind: 'ephemeral' } | { kind: 'persisted'; path: string },
+  blockTools: boolean,
+): Promise<PromptRun> {
   return new Promise((resolve, reject) => {
+    const sessionArgs = session.kind === 'persisted'
+      ? ['--session', session.path]
+      : ['--no-session']
+    const extensionArgs = blockTools
+      ? ['-e', extensionPath, '-e', blockerPath]
+      : ['-e', extensionPath]
     const child = spawn(
       piPath,
       [
         '--mode',
         'json',
-        '--no-session',
+        ...sessionArgs,
         '--no-extensions',
         '--no-skills',
         '--no-prompt-templates',
@@ -63,16 +98,13 @@ export function runPrompt(cwd: string, prompt: string): Promise<ToolCall[]> {
         '--thinking',
         thinking,
         '--tools',
-        'read,write,edit,bash,grep,find,ls,agentWorkflowScript,runSubAgents',
-        '-e',
-        extensionPath,
-        '-e',
-        blockerPath,
+        'read,write,edit,bash,grep,find,ls,agentWorkflowScript,runSubAgents,joinSubAgents',
+        ...extensionArgs,
         prompt,
       ],
       {
         cwd,
-        env: process.env,
+        env: getEnvironment(),
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 180_000,
       },
@@ -90,7 +122,8 @@ export function runPrompt(cwd: string, prompt: string): Promise<ToolCall[]> {
     child.on('error', reject)
     child.on('close', (code, signal) => {
       if (code === 0) {
-        resolve(parseToolCalls(stdout))
+        const events = parseEvents(stdout)
+        resolve({ events, toolCalls: parseToolCalls(events) })
         return
       }
       reject(
@@ -100,4 +133,13 @@ export function runPrompt(cwd: string, prompt: string): Promise<ToolCall[]> {
       )
     })
   })
+}
+
+export async function runPrompt(cwd: string, prompt: string): Promise<ToolCall[]> {
+  const result = await runPi(cwd, prompt, { kind: 'ephemeral' }, true)
+  return result.toolCalls
+}
+
+export function runLifecycle(cwd: string, sessionPath: string, prompt: string): Promise<PromptRun> {
+  return runPi(cwd, prompt, { kind: 'persisted', path: sessionPath }, false)
 }

@@ -26,7 +26,7 @@ export type SubagentJob = {
   result?: SubagentJobResult
 }
 
-type Collector = {
+type Joiner = {
   resolve: (result: SubagentJobResult | undefined) => void
   reject: (error: unknown) => void
   signal: AbortSignal | undefined
@@ -38,7 +38,7 @@ type InternalJob = SubagentJob & {
   settled: boolean
   failureResult: ((error: unknown, aborted: boolean) => SubagentJobResult) | undefined
   resolveSettle: () => void
-  collectors: Collector[]
+  joiners: Joiner[]
 }
 
 type JobRegistryEvents = {
@@ -60,7 +60,7 @@ type StartJobInput = {
 }
 
 function abortError(): DOMException {
-  return new DOMException('Collect aborted', 'AbortError')
+  return new DOMException('Join aborted', 'AbortError')
 }
 
 export function createJobId(
@@ -107,7 +107,7 @@ export class JobRegistry {
       settled: false,
       failureResult,
       resolveSettle,
-      collectors: [],
+      joiners: [],
     }
     this.jobs.set(id, job)
     return job
@@ -162,7 +162,7 @@ export class JobRegistry {
     return [...this.jobs.values()].filter(job => !job.settled)
   }
 
-  collect(id: string, signal: AbortSignal | undefined): Promise<SubagentJobResult | undefined> {
+  join(id: string, signal: AbortSignal | undefined): Promise<SubagentJobResult | undefined> {
     if (this.deliveredJobIds.has(id)) return Promise.resolve(undefined)
     const job = this.require(id)
     if (signal?.aborted) return Promise.reject(abortError())
@@ -173,16 +173,16 @@ export class JobRegistry {
     }
 
     return new Promise((resolve, reject) => {
-      const collector: Collector = { resolve, reject, signal }
+      const joiner: Joiner = { resolve, reject, signal }
       if (signal) {
-        collector.abortHandler = () => {
-          const index = job.collectors.indexOf(collector)
-          if (index >= 0) job.collectors.splice(index, 1)
+        joiner.abortHandler = () => {
+          const index = job.joiners.indexOf(joiner)
+          if (index >= 0) job.joiners.splice(index, 1)
           reject(abortError())
         }
-        signal.addEventListener('abort', collector.abortHandler, { once: true })
+        signal.addEventListener('abort', joiner.abortHandler, { once: true })
       }
-      job.collectors.push(collector)
+      job.joiners.push(joiner)
     })
   }
 
@@ -233,12 +233,12 @@ export class JobRegistry {
     for (const agent of job.agents) agent.state = 'done'
     this.events.onSettled?.(job, result)
 
-    const collector = job.collectors.shift()
-    if (collector) {
-      this.removeAbortHandler(collector)
+    const joiner = job.joiners.shift()
+    if (joiner) {
+      this.removeAbortHandler(joiner)
       const delivered = this.takeResult(job)
-      collector.resolve(delivered)
-      for (const extra of job.collectors.splice(0)) {
+      joiner.resolve(delivered)
+      for (const extra of job.joiners.splice(0)) {
         this.removeAbortHandler(extra)
         extra.resolve(undefined)
       }
@@ -262,7 +262,7 @@ export class JobRegistry {
   private completeDelivery(job: InternalJob): void {
     job.result = undefined
     job.failureResult = undefined
-    job.collectors.length = 0
+    job.joiners.length = 0
     this.jobs.delete(job.id)
     this.deliveredJobIds.add(job.id)
     this.events.onDelivered?.(job)
@@ -274,9 +274,9 @@ export class JobRegistry {
     return job
   }
 
-  private removeAbortHandler(collector: Collector): void {
-    if (collector.signal && collector.abortHandler) {
-      collector.signal.removeEventListener('abort', collector.abortHandler)
+  private removeAbortHandler(joiner: Joiner): void {
+    if (joiner.signal && joiner.abortHandler) {
+      joiner.signal.removeEventListener('abort', joiner.abortHandler)
     }
   }
 }

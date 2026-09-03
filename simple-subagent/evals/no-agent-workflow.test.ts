@@ -8,20 +8,26 @@ import { attemptsPerScenario, runPrompt, type ToolCall } from './prompting-harne
 type Scenario = {
   name: string
   prompt: string
-  expectedTools: string[]
+  requiredTools?: string[]
 }
 
 function assertDirectCalls(scenario: Scenario, attempt: number, calls: ToolCall[]) {
-  const actualTools = calls.map(call => call.toolName).sort()
+  const actualTools = calls.map(call => call.toolName)
+  assert.ok(calls.length > 0, `${scenario.name}, attempt ${attempt}: no tool call`)
   assert.ok(
     !actualTools.includes('agentWorkflowScript'),
     `${scenario.name}, attempt ${attempt}: agentWorkflowScript should not run\n${JSON.stringify(calls, null, 2)}`,
   )
-  assert.deepEqual(
-    actualTools,
-    [...scenario.expectedTools].sort(),
-    `${scenario.name}, attempt ${attempt}: wrong direct tools\n${JSON.stringify(calls, null, 2)}`,
+  assert.ok(
+    !actualTools.includes('joinSubAgents'),
+    `${scenario.name}, attempt ${attempt}: joinSubAgents should not run\n${JSON.stringify(calls, null, 2)}`,
   )
+  for (const tool of scenario.requiredTools ?? []) {
+    assert.ok(
+      actualTools.includes(tool),
+      `${scenario.name}, attempt ${attempt}: expected ${tool}\n${JSON.stringify(calls, null, 2)}`,
+    )
+  }
 }
 
 test('realistic coding work does not use agentWorkflowScript when the parent needs the result', { timeout: 3_600_000 }, async t => {
@@ -49,23 +55,21 @@ test('realistic coding work does not use agentWorkflowScript when the parent nee
   const scenarios: Scenario[] = [
     {
       name: 'starts a code change by inspecting the implementation',
-      prompt: `Requests time out too quickly. Inspect ${configPath}, change the timeout to 30 seconds while preserving the existing style, then run the relevant tests. Start by examining the implementation.`,
-      expectedTools: ['read'],
+      prompt: `Change the request timeout in ${configPath} from 5 seconds to 30 seconds and run the relevant tests.`,
     },
     {
       name: 'runs a failing test before diagnosing it',
-      prompt: `The test suite in ${cwd} is failing. Run npm test, inspect the failure, and identify the root cause before changing any files.`,
-      expectedTools: ['bash'],
+      prompt: `npm test is failing in ${cwd}. Find the root cause before editing anything.`,
     },
     {
       name: 'reads instructions before tailoring a subagent prompt',
-      prompt: `Read ${reviewerPath}. Use your own judgment to tailor those instructions to the timeout change in ${configPath}, then dispatch an isolated reviewer. Start by reading the instructions yourself.`,
-      expectedTools: ['read'],
+      prompt: `Read ${reviewerPath} and explain which parts do not fit ${configPath}. Then rewrite the instructions and send them to an isolated reviewer.`,
+      requiredTools: ['read'],
     },
     {
       name: 'keeps independent parent and subagent work as separate calls',
-      prompt: `Dispatch an isolated reviewer with the complete prompt "Review ${configPath} for timeout bugs." While it runs, independently read ${configPath} yourself so you can explain the current behavior. Start both independent tasks now.`,
-      expectedTools: ['read', 'runSubAgents'],
+      prompt: `Have an isolated reviewer inspect ${configPath} for timeout bugs. While they work, explain the current timeout behavior to me.`,
+      requiredTools: ['runSubAgents'],
     },
   ]
 

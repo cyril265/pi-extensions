@@ -9,6 +9,7 @@
   "scripts": {
     "check": "tsc --noEmit",
     "test": "node --test extensions/*.test.ts herdr/*.test.ts",
+    "test:join": "node --test --test-concurrency=1 evals/join-usage.test.ts",
     "test:prompting": "node --test --test-concurrency=1 evals/*.test.ts"
   },
   "keywords": [

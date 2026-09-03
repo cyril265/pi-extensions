@@ -6,9 +6,10 @@ All notable changes to this repository are documented here.
 
 ### simple-subagent
 
-- Refined tool guidance so direct tools handle intermediate results the parent must inspect, while `agentWorkflowScript` handles dependent tool chains.
-- Clarified automatic result delivery, when to call `collectSubagents`, how to write self-contained prompts, and when to reuse session keys.
-- Added real-model prompting evals covering dependent workflows, direct coding work, and independent parent and subagent calls.
+- Refined tool guidance so direct tools handle coding and interpretation, while `agentWorkflowScript` handles mechanical handoffs between calls.
+- Renamed `collectSubagents` to `joinSubAgents` so its name describes waiting at a dependency point instead of normal result retrieval.
+- Clarified automatic result delivery, how nested workflows join a dispatched job, how to write self-contained prompts, and when to reuse session keys.
+- Added real-model prompting evals covering dependent workflows, direct coding work, automatic result delivery, and single-use joining when a result feeds another nested tool call.
 
 ## 2026-08-30 18:47
 

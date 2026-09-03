@@ -43,41 +43,45 @@ function assertScenario(scenario: Scenario, attempt: number, calls: ToolCall[]) 
 test('agentWorkflowScript prompting routes dependent and direct work correctly', { timeout: 3_600_000 }, async t => {
   const cwd = await mkdtemp(join(tmpdir(), 'simple-subagent-prompting-'))
   const instructionsPath = join(cwd, 'reviewer.md')
-  await writeFile(instructionsPath, 'Review the change for correctness.\n', 'utf8')
+  await writeFile(
+    instructionsPath,
+    'Review the current changes for correctness and name the most serious risk.\n',
+    'utf8',
+  )
 
   const scenarios: Scenario[] = [
     {
-      name: 'passes file contents directly to a subagent',
-      prompt: `Read ${instructionsPath} and pass its exact contents unchanged as the prompt to one isolated subagent named reviewer. Do not inspect or quote the file yourself.`,
+      name: 'gives file-based instructions to a subagent',
+      prompt: `Have an isolated reviewer follow the instructions in ${instructionsPath}.`,
       expectedTool: 'agentWorkflowScript',
       nestedTools: ['read'],
     },
     {
-      name: 'passes command output directly to a subagent',
+      name: 'sends command output to a subagent',
       prompt:
-        'Run `printf workflow-source` and pass its stdout unchanged as the prompt to one isolated subagent named reviewer. Do not inspect or quote stdout yourself.',
+        'Run `printf workflow-source` here, then have an isolated reviewer examine exactly what it printed.',
       expectedTool: 'agentWorkflowScript',
       nestedTools: ['bash'],
     },
     {
-      name: 'combines independent tool results in a subagent prompt',
-      prompt: `Read ${instructionsPath} and run \`printf change-set\` independently. Start one isolated subagent named reviewer with a prompt containing the complete file text followed by the complete command output. Do not inspect either result yourself.`,
+      name: 'combines review instructions with command output',
+      prompt: `Have an isolated reviewer apply ${instructionsPath} to the output of \`printf change-set\`.`,
       expectedTool: 'agentWorkflowScript',
       nestedTools: ['read', 'bash'],
     },
     {
       name: 'dispatches directly when the subagent prompt is complete',
-      prompt: 'Start one isolated subagent named reviewer with the exact prompt `Reply with READY.`',
+      prompt: 'Ask an isolated reviewer to reply with READY.',
       expectedTool: 'runSubAgents',
     },
     {
       name: 'reads directly when the parent needs the result',
-      prompt: `Read ${instructionsPath} and tell me its first line.`,
+      prompt: `What is the first line of ${instructionsPath}?`,
       expectedTool: 'read',
     },
     {
       name: 'reads directly when the parent must interpret the result',
-      prompt: `Read ${instructionsPath}. Interpret its instructions yourself, then decide what prompt to write for an isolated subagent named reviewer.`,
+      prompt: `Read ${instructionsPath} and tell me which instructions do not fit a timeout review. Then rewrite them and send the new instructions to an isolated reviewer.`,
       expectedTool: 'read',
     },
   ]

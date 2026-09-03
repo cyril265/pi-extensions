@@ -304,8 +304,8 @@ test('agentWorkflowScript invokes the registered subagent definition', async () 
   const integration: RegisteredSubagentTools = {
     runSubAgentsTool:
       runSubAgentsTool as unknown as RegisteredSubagentTools['runSubAgentsTool'],
-    collectSubagentsTool:
-      runSubAgentsTool as unknown as RegisteredSubagentTools['collectSubagentsTool'],
+    joinSubAgentsTool:
+      runSubAgentsTool as unknown as RegisteredSubagentTools['joinSubAgentsTool'],
   }
   registerNodeScriptTool(pi, integration)
   assert.ok(scriptTool)
@@ -338,7 +338,7 @@ test('agentWorkflowScript renders the complete JavaScript source', () => {
   const unavailableTool = {} as ToolDefinition<any, any>
   registerNodeScriptTool(pi, {
     runSubAgentsTool: unavailableTool,
-    collectSubagentsTool: unavailableTool,
+    joinSubAgentsTool: unavailableTool,
   })
   assert.ok(scriptTool?.renderCall)
 
@@ -387,7 +387,7 @@ test('managed children can use agentWorkflowScript while subagent calls stay loc
       code: `
         const file = await tools.read({ path: "value.txt" })
         try {
-          await tools.collectSubagents({ jobId: "missing" })
+          await tools.joinSubAgents({ jobId: "missing" })
           return "wrong"
         } catch (error) {
           return { native: file.text, subagents: error.message }
@@ -406,7 +406,7 @@ test('managed children can use agentWorkflowScript while subagent calls stay loc
   })
 })
 
-test('agentWorkflowScript collect uses the real registered JobRegistry', async () => {
+test('agentWorkflowScript join uses the real registered JobRegistry', async () => {
   const tools: ToolDefinition<any, any>[] = []
   const pi = {
     registerTool(tool: ToolDefinition<any, any>) {
@@ -430,7 +430,7 @@ test('agentWorkflowScript collect uses the real registered JobRegistry', async (
     {
       code: `
         try {
-          await tools.collectSubagents({ jobId: "missing" })
+          await tools.joinSubAgents({ jobId: "missing" })
           return "wrong"
         } catch (error) {
           return error.message

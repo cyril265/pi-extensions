@@ -11,7 +11,7 @@ const TOOL_NAMES = [
   'find',
   'ls',
   'runSubAgents',
-  'collectSubagents',
+  'joinSubAgents',
 ]
 
 if (!parentPort) throw new Error('agentWorkflowScript worker requires a parent port')

@@ -45,7 +45,7 @@ type SubagentDispatchDetails = {
 
 export type RegisteredSubagentTools = {
   runSubAgentsTool: ToolDefinition<any, SubagentDispatchDetails>
-  collectSubagentsTool: ToolDefinition<any, SubagentResultDetails | undefined>
+  joinSubAgentsTool: ToolDefinition<any, SubagentResultDetails | undefined>
 }
 
 function getMessageText(content: string | Array<{ type: string; text?: string }>): string {
@@ -301,7 +301,7 @@ export function registerSubagentTools(
               text: [
                 `Subagents dispatched. jobId: ${job.id}`,
                 ...job.agents.map(agent => `${agent.name} sessionKey: ${agent.sessionKey}`),
-                `Results will be delivered automatically. Call collectSubagents({ jobId: "${job.id}" }) only if this result must feed another tool call before the current turn ends.`,
+                'Results will be delivered automatically.',
               ].join('\n'),
             },
           ],
@@ -324,20 +324,23 @@ export function registerSubagentTools(
 
   pi.registerTool(runSubAgentsTool)
 
-  const collectSubagentsParameters = Type.Object({
-    jobId: Type.String(),
+  const joinSubAgentsParameters = Type.Object({
+    jobId: Type.String({
+      description: 'Job ID from runSubAgentsResult.details.jobId',
+    }),
   })
-  const collectSubagentsTool: ToolDefinition<
-    typeof collectSubagentsParameters,
+  const joinSubAgentsTool: ToolDefinition<
+    typeof joinSubAgentsParameters,
     SubagentResultDetails | undefined
   > = {
-    name: 'collectSubagents',
-    label: 'Collect Subagents',
-    description: 'Wait for a subagent job and return its undelivered result.',
-    parameters: collectSubagentsParameters,
+    name: 'joinSubAgents',
+    label: 'Join Subagents',
+    description:
+      'Join a runSubAgents job inside agentWorkflowScript when a later call in the same script needs its result.',
+    parameters: joinSubAgentsParameters,
     renderCall(args, theme) {
       return new Text(
-        `${theme.fg('toolTitle', theme.bold('collectSubagents'))} ${theme.fg('accent', args.jobId)}`,
+        `${theme.fg('toolTitle', theme.bold('joinSubAgents'))} ${theme.fg('accent', args.jobId)}`,
         0,
         0,
       )
@@ -350,7 +353,7 @@ export function registerSubagentTools(
     },
     async execute(_toolCallId, params, signal) {
       assertSubagentToolsAvailable()
-      const result = await jobs.collect(params.jobId, signal)
+      const result = await jobs.join(params.jobId, signal)
       if (!result) {
         return {
           content: [
@@ -374,7 +377,7 @@ export function registerSubagentTools(
     },
   }
 
-  pi.registerTool(collectSubagentsTool)
+  pi.registerTool(joinSubAgentsTool)
 
   const runSubAgentsWithContextParameters = Type.Object({
     agents: Type.Array(
@@ -606,5 +609,5 @@ export function registerSubagentTools(
     jobContexts.clear()
   })
 
-  return { runSubAgentsTool, collectSubagentsTool }
+  return { runSubAgentsTool, joinSubAgentsTool }
 }

@@ -61,7 +61,7 @@ test('lists configured aliases only in the isolated subagent tool description', 
   assert.match(tools[0].description, /options opus, codex/)
   assert.doesNotMatch(tools[1].description, /options opus, codex/)
   assert.equal(registered.runSubAgentsTool, tools[0])
-  assert.equal(registered.collectSubagentsTool, tools[1])
+  assert.equal(registered.joinSubAgentsTool, tools[1])
 })
 
 test('locks subagent tools only for managed process startup', () => {
@@ -98,16 +98,16 @@ test('keeps tool schemas active while locking their execution during the assigne
   registerSubagentTools(pi, true, { enableForkTool: false, modelAliases: {} })
   handlers.get('session_start')?.({ reason: 'startup' }, {})
 
-  const collectTool = tools.find(tool => tool.name === 'collectSubagents')
-  assert.ok(collectTool)
+  const joinTool = tools.find(tool => tool.name === 'joinSubAgents')
+  assert.ok(joinTool)
   await assert.rejects(
-    collectTool.execute('collect-call', { jobId: 'missing' }, undefined),
+    joinTool.execute('join-call', { jobId: 'missing' }, undefined),
     /Subagent tools are unavailable during this run/,
   )
 
   handlers.get('agent_settled')?.()
   await assert.rejects(
-    collectTool.execute('collect-call', { jobId: 'missing' }, undefined),
+    joinTool.execute('join-call', { jobId: 'missing' }, undefined),
     /Unknown subagent job: missing/,
   )
   assert.equal(activeToolChanges, 0)

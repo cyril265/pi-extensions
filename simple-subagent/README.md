@@ -3,14 +3,14 @@
 Pi extension for asynchronous subagents:
 
 - `runSubAgents({ agents: [...] })` dispatches isolated agents and immediately returns an 8-character job ID and session keys
-- `collectSubagents({ jobId })` waits for results not already delivered
+- `joinSubAgents({ jobId })` joins a dispatched job when another tool call needs its result
 - `runSubAgentsWithContext({ agents: [...] })` asynchronously forks the parent context; disabled by default
 - `agentWorkflowScript({ code })` runs trusted one-shot JavaScript that composes Pi's stock tools and isolated subagents
 - `/subagents` opens a running-job picker with cancellation; `/subagents cancel <jobId>` is the scriptable path
 
-When a job settles, uncollected results are pushed into the parent conversation. Pi queues the
-message as steering while streaming or starts a result-processing turn while idle. Cancelling
-a waiting `collectSubagents` call leaves the job running. Jobs are cancelled on session shutdown,
+When a job settles without a waiting join, its results are pushed into the parent conversation. Pi
+queues the message as steering while streaming or starts a result-processing turn while idle.
+Cancelling a waiting `joinSubAgents` call leaves the job running. Jobs are cancelled on session shutdown,
 `/new`, session switches, and `/subagents cancel`.
 
 The TUI shows a ticking compact widget with job counts and each agent's latest tool call.
@@ -124,7 +124,7 @@ grep
 find
 ls
 runSubAgents
-collectSubagents
+joinSubAgents
 ```
 
 Every successful call resolves to:
@@ -175,13 +175,13 @@ extensions, and nested `tool_call` or `tool_result` hooks. The outer `agentWorkf
 Pi's normal tool lifecycle.
 
 Pressing Escape terminates the worker and aborts active native calls. A waiting
-`collectSubagents` call is removed, but dispatched subagent jobs keep running. Session shutdown
+`joinSubAgents` call is removed, but dispatched subagent jobs keep running. Session shutdown
 also terminates workers, then applies simple-subagent's existing behavior of cancelling all jobs.
 If a script returns while one of its tool promises is unresolved, `agentWorkflowScript` aborts those calls
 and fails.
 
-Collection keeps the existing winner-takes-result behavior. A collector that is waiting first gets
-the result. If push delivery wins first, a later collect reports that no undelivered result remains.
+Joining keeps the existing winner-takes-result behavior. A waiting join gets the result first. If
+push delivery wins first, a later join reports that no undelivered result remains.
 `runSubAgentsWithContext`, extension tools, and MCP tools are not available inside `agentWorkflowScript`.
 
 ## Isolated subagent behavior
@@ -196,9 +196,9 @@ right/down as their shape changes so larger runs stay usable. Before a new run, 
 in the workspace are closed while active panes remain. Workspace setup uses a kernel-owned lock
 that is released if the launcher crashes.
 
-During its parent-assigned run, a subagent cannot call `runSubAgents`, `collectSubagents`, or
+During its parent-assigned run, a subagent cannot call `runSubAgents`, `joinSubAgents`, or
 `runSubAgentsWithContext`. `agentWorkflowScript` remains available, but its nested `runSubAgents` and
-`collectSubagents` calls hit the same lock. Once the run settles, the subagent tools become
+`joinSubAgents` calls hit the same lock. Once the run settles, the subagent tools become
 available in the retained Herdr pane for normal interactive continuation. Their schemas remain
 active while execution is locked so the provider prompt-cache prefix does not change at
 settlement; the assigned prompt instructs the agent not to call them. Reusing a session key starts
@@ -248,7 +248,7 @@ Enable the separate fork tool with `enableForkTool` in `~/.pi/agent/simple-subag
 - fork sessions have unique Pi session IDs and inherit the parent's prompt cache key so OpenAI routes parent and child requests to the same cache identity across processes and connections
 - fork dispatch returns `terminate: true`; execution starts after the scheduling turn has persisted its tool result
 - fork progress and child tool calls are shown live above the editor, then retained in the result message
-- completed fork results use the same collect-or-push delivery as isolated jobs
+- completed fork results use the same join-or-push delivery as isolated jobs
 - each fork reports first-turn parent-cache usage explicitly without conflating cache telemetry with child execution success
 
 - `/forkTab` forks the current session into a new interactive Herdr tab, inherits the model and thinking level, and sends no prompt
@@ -256,10 +256,13 @@ Enable the separate fork tool with `enableForkTool` in `~/.pi/agent/simple-subag
 ## Prompting evals
 
 The prompting evals run Pi with `openai-codex/gpt-5.6-sol` at medium thinking and verify which
-tool it calls. The cases cover dependent handoffs, coding work the parent must inspect, and
+tool it calls. Routing cases cover dependent handoffs, coding work the parent must inspect, and
 independent parent and subagent calls. They block tool execution after capturing the call, so they
-do not start subagents or run generated scripts. Each scenario runs three times.
+do not start subagents or run generated scripts. Each routing scenario runs three times. The join
+cases run real subagents to verify automatic delivery and nested joining.
 
 ```bash
 npm run test:prompting
 ```
+
+Run the slower join lifecycle cases on their own with `npm run test:join`.

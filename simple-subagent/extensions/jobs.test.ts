@@ -46,7 +46,7 @@ function failure(error: unknown): SubagentJobResult {
   }
 }
 
-test('settles into one waiting collector and never delivers the same result twice', async () => {
+test('settles into one waiting join and never delivers the same result twice', async () => {
   let finish!: (value: SubagentJobResult) => void
   const run = new Promise<SubagentJobResult>(resolve => {
     finish = resolve
@@ -63,13 +63,13 @@ test('settles into one waiting collector and never delivers the same result twic
     failureResult: failure,
   })
 
-  const collected = jobs.collect(job.id, undefined)
+  const joined = jobs.join(job.id, undefined)
   finish(result())
 
-  assert.equal((await collected)?.text, 'done')
+  assert.equal((await joined)?.text, 'done')
   assert.deepEqual(pushed, [])
   assert.deepEqual(job.agents.map(agent => agent.state), ['delivered'])
-  assert.equal(await jobs.collect(job.id, undefined), undefined)
+  assert.equal(await jobs.join(job.id, undefined), undefined)
 })
 
 test('pushes settled results once and steers a running agent', async () => {
@@ -88,12 +88,12 @@ test('pushes settled results once and steers a running agent', async () => {
   await job.settle
 
   assert.deepEqual(pushed, ['pushed'])
-  assert.equal(await jobs.collect(job.id, undefined), undefined)
+  assert.equal(await jobs.join(job.id, undefined), undefined)
   assert.deepEqual(getPushOptions(false), { deliverAs: 'steer' })
   assert.deepEqual(getPushOptions(true), { triggerTurn: true })
 })
 
-test('aborting collect leaves the job running for later push delivery', async () => {
+test('aborting join leaves the job running for later push delivery', async () => {
   let finish!: (value: SubagentJobResult) => void
   const run = new Promise<SubagentJobResult>(resolve => {
     finish = resolve
@@ -110,10 +110,10 @@ test('aborting collect leaves the job running for later push delivery', async ()
     failureResult: failure,
   })
   const controller = new AbortController()
-  const collected = jobs.collect(job.id, controller.signal)
+  const joined = jobs.join(job.id, controller.signal)
 
   controller.abort()
-  await assert.rejects(collected, error => error instanceof DOMException && error.name === 'AbortError')
+  await assert.rejects(joined, error => error instanceof DOMException && error.name === 'AbortError')
   assert.equal(jobs.isRunning(job.id), true)
 
   finish(result('after abort'))
