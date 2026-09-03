@@ -13,8 +13,8 @@ import {
 type Scenario = {
   name: string
   prompt: string
-  expectedTool: 'agentWorkflowScript' | 'read' | 'runSubAgents'
-  nestedTools?: Array<'read' | 'bash'>
+  expectedTool: 'bash' | 'read'
+  cliCommand?: 'dispatch' | 'run'
 }
 
 function assertScenario(scenario: Scenario, attempt: number, calls: ToolCall[]) {
@@ -30,19 +30,17 @@ function assertScenario(scenario: Scenario, attempt: number, calls: ToolCall[]) 
     `${scenario.name}, attempt ${attempt}: wrong tool\n${JSON.stringify(call, null, 2)}`,
   )
 
-  if (scenario.expectedTool !== 'agentWorkflowScript') return
-  assert.ok(isRecord(call.args) && typeof call.args.code === 'string')
-  const code = call.args.code
-  assert.match(code, /tools\.runSubAgents\s*\(/)
-  assert.match(code, /\.text\b/)
-  for (const tool of scenario.nestedTools ?? []) {
-    assert.match(code, new RegExp(`tools\\.${tool}\\s*\\(`))
+  if (scenario.expectedTool === 'bash') {
+    assert.ok(isRecord(call.args) && typeof call.args.command === 'string')
+    assert.match(call.args.command, new RegExp(`subagent\\s+${scenario.cliCommand}`))
+    return
   }
 }
 
-test('agentWorkflowScript prompting routes dependent and direct work correctly', { timeout: 3_600_000 }, async t => {
+test('shell CLI prompting routes dependent and direct work correctly', { timeout: 3_600_000 }, async t => {
   const cwd = await mkdtemp(join(tmpdir(), 'simple-subagent-prompting-'))
   const instructionsPath = join(cwd, 'reviewer.md')
+  const responsePath = join(cwd, 'response.txt')
   await writeFile(
     instructionsPath,
     'Review the current changes for correctness and name the most serious risk.\n',
@@ -52,27 +50,28 @@ test('agentWorkflowScript prompting routes dependent and direct work correctly',
   const scenarios: Scenario[] = [
     {
       name: 'gives file-based instructions to a subagent',
-      prompt: `Have an isolated reviewer follow the instructions in ${instructionsPath}.`,
-      expectedTool: 'agentWorkflowScript',
-      nestedTools: ['read'],
+      prompt: `Have an isolated reviewer follow the instructions in ${instructionsPath}, then save its exact response to ${responsePath}. Do not inspect or rewrite either file.`,
+      expectedTool: 'bash',
+      cliCommand: 'run',
     },
     {
       name: 'sends command output to a subagent',
       prompt:
-        'Run `printf workflow-source` here, then have an isolated reviewer examine exactly what it printed.',
-      expectedTool: 'agentWorkflowScript',
-      nestedTools: ['bash'],
+        `Run \`printf workflow-source\` here, have an isolated reviewer examine exactly what it printed, then save the exact response to ${responsePath}. Do not inspect or rewrite the command output or response.`,
+      expectedTool: 'bash',
+      cliCommand: 'run',
     },
     {
       name: 'combines review instructions with command output',
-      prompt: `Have an isolated reviewer apply ${instructionsPath} to the output of \`printf change-set\`.`,
-      expectedTool: 'agentWorkflowScript',
-      nestedTools: ['read', 'bash'],
+      prompt: `Have an isolated reviewer apply ${instructionsPath} to the output of \`printf change-set\`, then save its exact response to ${responsePath}. Do not inspect or rewrite the file, command output, or response.`,
+      expectedTool: 'bash',
+      cliCommand: 'run',
     },
     {
-      name: 'dispatches directly when the subagent prompt is complete',
-      prompt: 'Ask an isolated reviewer to reply with READY.',
-      expectedTool: 'runSubAgents',
+      name: 'dispatches when the parent does not need the result yet',
+      prompt: 'Dispatch an isolated reviewer to reply with READY. I do not need the report yet.',
+      expectedTool: 'bash',
+      cliCommand: 'dispatch',
     },
     {
       name: 'reads directly when the parent needs the result',

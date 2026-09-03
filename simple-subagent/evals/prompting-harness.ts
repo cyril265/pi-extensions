@@ -57,6 +57,9 @@ function parseToolCalls(events: unknown[]): ToolCall[] {
 
 function getEnvironment(): NodeJS.ProcessEnv {
   const env = { ...process.env }
+  for (const name of Object.keys(env)) {
+    if (name.startsWith('PI_SIMPLE_SUBAGENT')) delete env[name]
+  }
   for (const name of [
     'HERDR_BIN_PATH',
     'HERDR_ENV',
@@ -70,12 +73,13 @@ function getEnvironment(): NodeJS.ProcessEnv {
   return env
 }
 
-function runPi(
+function invokePi(
   cwd: string,
   prompt: string,
   session: { kind: 'ephemeral' } | { kind: 'persisted'; path: string },
   blockTools: boolean,
-): Promise<PromptRun> {
+  mode: 'json' | 'print',
+): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const sessionArgs = session.kind === 'persisted'
       ? ['--session', session.path]
@@ -86,8 +90,7 @@ function runPi(
     const child = spawn(
       piPath,
       [
-        '--mode',
-        'json',
+        ...(mode === 'json' ? ['--mode', 'json'] : ['-p']),
         ...sessionArgs,
         '--no-extensions',
         '--no-skills',
@@ -122,8 +125,7 @@ function runPi(
     child.on('error', reject)
     child.on('close', (code, signal) => {
       if (code === 0) {
-        const events = parseEvents(stdout)
-        resolve({ events, toolCalls: parseToolCalls(events) })
+        resolve({ stdout, stderr })
         return
       }
       reject(
@@ -135,6 +137,17 @@ function runPi(
   })
 }
 
+async function runPi(
+  cwd: string,
+  prompt: string,
+  session: { kind: 'ephemeral' } | { kind: 'persisted'; path: string },
+  blockTools: boolean,
+): Promise<PromptRun> {
+  const { stdout } = await invokePi(cwd, prompt, session, blockTools, 'json')
+  const events = parseEvents(stdout)
+  return { events, toolCalls: parseToolCalls(events) }
+}
+
 export async function runPrompt(cwd: string, prompt: string): Promise<ToolCall[]> {
   const result = await runPi(cwd, prompt, { kind: 'ephemeral' }, true)
   return result.toolCalls
@@ -142,4 +155,19 @@ export async function runPrompt(cwd: string, prompt: string): Promise<ToolCall[]
 
 export function runLifecycle(cwd: string, sessionPath: string, prompt: string): Promise<PromptRun> {
   return runPi(cwd, prompt, { kind: 'persisted', path: sessionPath }, false)
+}
+
+export async function runPrintLifecycle(
+  cwd: string,
+  sessionPath: string,
+  prompt: string,
+): Promise<string> {
+  const result = await invokePi(
+    cwd,
+    prompt,
+    { kind: 'persisted', path: sessionPath },
+    false,
+    'print',
+  )
+  return result.stdout
 }

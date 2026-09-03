@@ -43,7 +43,7 @@ import { formatTokenCount } from './usage.ts'
 
 export const INLINE_RESULT_MAX_CHARACTERS = 2048
 const PARENT_ASSIGNED_RUN_INSTRUCTION =
-  'Do not call runSubAgents, joinSubAgents, or runSubAgentsWithContext during this run; those tools are unavailable.'
+  'Do not call runSubAgents, joinSubAgents, runSubAgentsWithContext, or the subagent CLI during this run; they are unavailable.'
 
 export function getParentAssignedPrompt(prompt: string): string {
   return `${prompt}${prompt ? '\n\n' : ''}${PARENT_ASSIGNED_RUN_INSTRUCTION}`

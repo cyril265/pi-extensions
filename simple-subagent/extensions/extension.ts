@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { registerCliBridge } from './cli-server.ts'
 import { readSimpleSubagentConfig } from './config.ts'
 import { registerHerdrChildBridge } from './herdr-child.ts'
 import { isHerdrTerminal, openHerdrForkTab } from './herdr-tab.ts'
@@ -58,6 +59,9 @@ export default function (pi: ExtensionAPI) {
     },
   })
 
+  const cliBridge = registerCliBridge(pi, config.modelAliases)
   const subagentTools = registerSubagentTools(pi, isSubagentProcess, config)
+  cliBridge.attach(subagentTools)
+  cliBridge.registerClosureWait()
   stopNodeScripts = registerNodeScriptTool(pi, subagentTools)
 }

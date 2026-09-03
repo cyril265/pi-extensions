@@ -2,6 +2,14 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-09-03
+
+### simple-subagent
+
+- Added the session-owned `subagent dispatch`, `subagent run`, and `subagent cancel` shell CLI over authenticated loopback TCP.
+- Routed CLI jobs through the existing registry, session locking, child runner, cancellation, widgets, and automatic parent delivery.
+- Added shell routing guidance, real CLI lifecycle coverage, and prompting evals for dependent and background shell workflows.
+
 ## 2026-09-02
 
 ### simple-subagent

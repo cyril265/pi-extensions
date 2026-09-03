@@ -407,7 +407,7 @@ function renderNodeScriptResult(
 
 export function registerNodeScriptTool(
   pi: ExtensionAPI,
-  subagentTools: RegisteredSubagentTools,
+  subagentTools: Pick<RegisteredSubagentTools, 'runSubAgentsTool' | 'joinSubAgentsTool'>,
 ): () => Promise<void> {
   const activeScripts = new Map<AbortController, Promise<NodeScriptWorkerResult>>()
   const parameters = Type.Object({
@@ -421,12 +421,11 @@ export function registerNodeScriptTool(
     name: 'agentWorkflowScript',
     label: 'agentWorkflowScript',
     description:
-      'Run JavaScript for a mechanical handoff when one supported tool result can feed another call without parent interpretation. This includes loading a prompt template before calling runSubAgents. Keep the handoff inside one agentWorkflowScript invocation. Available tools are read, write, edit, bash, grep, find, ls, runSubAgents, and joinSubAgents. The worker has no Node globals.',
+      'Compatibility tool for trusted JavaScript handoffs that normal shell composition cannot express. Use the subagent shell CLI for isolated subagent work. Available tools are read, write, edit, bash, grep, find, ls, runSubAgents, and joinSubAgents. The worker has no Node globals.',
     promptSnippet:
-      'Mechanically pass one tool result into another call',
+      'Run a trusted JavaScript handoff only when normal shell composition cannot express it',
     promptGuidelines: [
-      'For prompt-template workflows, read the template with tools.read inside agentWorkflowScript and pass readResult.text to tools.runSubAgents.',
-      'In agentWorkflowScript, join a dispatched job with tools.joinSubAgents({ jobId: runSubAgentsResult.details.jobId }) when a later call needs its result. runSubAgentsResult.text is display text, not JSON.',
+      'Prefer shell pipelines with subagent run over agentWorkflowScript when one subagent response feeds later shell work.',
       'Use direct tools for coding, debugging, or any step where the agent must inspect or interpret an intermediate result.',
       'In agentWorkflowScript, await or return every started tool call. Use Promise.all only when calls are independent.',
     ],

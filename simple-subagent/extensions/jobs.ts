@@ -188,7 +188,7 @@ export class JobRegistry {
 
   cancel(id: string): boolean {
     const job = this.jobs.get(id)
-    if (!job || job.settled) return false
+    if (!job || job.settled || job.controller.signal.aborted) return false
     job.controller.abort(`Subagent job ${id} cancelled`)
     if (!job.started) {
       this.finalize(job, job.failureResult!(job.controller.signal.reason, true))

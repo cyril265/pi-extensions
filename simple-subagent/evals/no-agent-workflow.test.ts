@@ -3,12 +3,13 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { attemptsPerScenario, runPrompt, type ToolCall } from './prompting-harness.ts'
+import { attemptsPerScenario, isRecord, runPrompt, type ToolCall } from './prompting-harness.ts'
 
 type Scenario = {
   name: string
   prompt: string
   requiredTools?: string[]
+  cliCommand?: 'dispatch'
 }
 
 function assertDirectCalls(scenario: Scenario, attempt: number, calls: ToolCall[]) {
@@ -27,6 +28,11 @@ function assertDirectCalls(scenario: Scenario, attempt: number, calls: ToolCall[
       actualTools.includes(tool),
       `${scenario.name}, attempt ${attempt}: expected ${tool}\n${JSON.stringify(calls, null, 2)}`,
     )
+  }
+  if (scenario.cliCommand) {
+    const bash = calls.find(call => call.toolName === 'bash')
+    assert.ok(bash && isRecord(bash.args) && typeof bash.args.command === 'string')
+    assert.match(bash.args.command, /subagent\s+dispatch/)
   }
 }
 
@@ -69,7 +75,8 @@ test('realistic coding work does not use agentWorkflowScript when the parent nee
     {
       name: 'keeps independent parent and subagent work as separate calls',
       prompt: `Have an isolated reviewer inspect ${configPath} for timeout bugs. While they work, explain the current timeout behavior to me.`,
-      requiredTools: ['runSubAgents'],
+      requiredTools: ['bash'],
+      cliCommand: 'dispatch',
     },
   ]
 

@@ -42,10 +42,21 @@ type SubagentDispatchDetails = {
   jobId: string
   agents: Array<{ name: string; sessionKey: string }>
 }
+export type IsolatedDispatchRequest = SubagentRequest & {
+  cwd: string
+  thinking: ThinkingLevel
+}
 
 export type RegisteredSubagentTools = {
   runSubAgentsTool: ToolDefinition<any, SubagentDispatchDetails>
   joinSubAgentsTool: ToolDefinition<any, SubagentResultDetails | undefined>
+  dispatchIsolated: (
+    requests: IsolatedDispatchRequest[],
+    toolCallId: string,
+    ctx: ExtensionContext,
+  ) => SubagentJob
+  join: (jobId: string, signal: AbortSignal | undefined) => Promise<SubagentJobResult | undefined>
+  cancel: (jobId: string) => boolean
 }
 
 function getMessageText(content: string | Array<{ type: string; text?: string }>): string {
@@ -219,6 +230,46 @@ export function registerSubagentTools(
     },
   })
 
+  const dispatchIsolated = (
+    requests: IsolatedDispatchRequest[],
+    toolCallId: string,
+    ctx: ExtensionContext,
+  ): SubagentJob => {
+    assertSubagentToolsAvailable()
+    if (requests.length === 0) throw new Error('No agents')
+    const jobId = createJobId(id => jobs.has(id))
+    const agents = requests.map(request => ({
+      ...request,
+      sessionKey: resolveSubagentSessionKey(request.cwd, request.name, request.sessionKey),
+    }))
+    try {
+      releaseSessionPaths.set(
+        jobId,
+        reserveSessionPaths(
+          activeSessionPaths,
+          agents.map(agent => getSubagentSessionPath(agent.cwd, agent.sessionKey)),
+        ),
+      )
+      jobContexts.set(jobId, ctx)
+      return startJob(
+        pi,
+        jobs,
+        jobId,
+        'isolated',
+        subagentToolsUnlocked,
+        config.modelAliases,
+        toolCallId,
+        agents,
+        ctx,
+      )
+    } catch (error) {
+      releaseSessionPaths.get(jobId)?.()
+      releaseSessionPaths.delete(jobId)
+      jobContexts.delete(jobId)
+      throw error
+    }
+  }
+
   const runSubAgentsParameters = Type.Object({
     agents: Type.Array(
       Type.Object({
@@ -238,7 +289,8 @@ export function registerSubagentTools(
     name: 'runSubAgents',
     label: 'Run Subagents',
     description: `
-        Dispatch self-contained work to isolated subagents and return a job ID plus session keys immediately. A subagent does not receive the parent context, so its prompt must include all required context. Continue independent work after dispatch. If nothing remains, end the turn. Results are delivered automatically.
+        Compatibility tool for existing callers and multi-agent batches. For one isolated agent, use the shell CLI instead: subagent dispatch for automatic delivery, or subagent run when later shell work needs the exact response.
+        Dispatch self-contained work to isolated subagents and return a job ID plus session keys immediately. A subagent does not receive the parent context, so its prompt must include all required context. Results are delivered automatically.
         Results from one call are delivered only after every agent finishes. Batch agents only when you need their results together; dispatch separate calls for independently actionable tasks so each result arrives as soon as it is ready.
         sessionKey: Choose a key for a new or existing child session, or omit it to generate one. Reuse a key when follow-up work should continue with the existing session context, and use distinct keys within one call.
         overrideModel: ${Object.keys(config.modelAliases).length > 0 ? `options ${Object.keys(config.modelAliases).join(', ')}` : 'use provider/model'}
@@ -269,55 +321,25 @@ export function registerSubagentTools(
       )
     },
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-      const jobId = createJobId(id => jobs.has(id))
-      const agents = params.agents.map(agent => ({
-        ...agent,
-        sessionKey: resolveSubagentSessionKey(agent.cwd, agent.name, agent.sessionKey),
-      }))
-      releaseSessionPaths.set(
-        jobId,
-        reserveSessionPaths(
-          activeSessionPaths,
-          agents.map(agent => getSubagentSessionPath(agent.cwd, agent.sessionKey)),
-        ),
-      )
-      jobContexts.set(jobId, ctx)
-      try {
-        const job = startJob(
-          pi,
-          jobs,
-          jobId,
-          'isolated',
-          subagentToolsUnlocked,
-          config.modelAliases,
-          toolCallId,
-          agents as SubagentRequest[],
-          ctx,
-        )
-        return {
-          content: [
-            {
-              type: 'text',
-              text: [
-                `Subagents dispatched. jobId: ${job.id}`,
-                ...job.agents.map(agent => `${agent.name} sessionKey: ${agent.sessionKey}`),
-                'Results will be delivered automatically.',
-              ].join('\n'),
-            },
-          ],
-          details: {
-            jobId: job.id,
-            agents: job.agents.map(agent => ({
-              name: agent.name,
-              sessionKey: agent.sessionKey,
-            })),
+      const job = dispatchIsolated(params.agents, toolCallId, ctx)
+      return {
+        content: [
+          {
+            type: 'text',
+            text: [
+              `Subagents dispatched. jobId: ${job.id}`,
+              ...job.agents.map(agent => `${agent.name} sessionKey: ${agent.sessionKey}`),
+              'Results will be delivered automatically.',
+            ].join('\n'),
           },
-        }
-      } catch (error) {
-        releaseSessionPaths.get(jobId)?.()
-        releaseSessionPaths.delete(jobId)
-        jobContexts.delete(jobId)
-        throw error
+        ],
+        details: {
+          jobId: job.id,
+          agents: job.agents.map(agent => ({
+            name: agent.name,
+            sessionKey: agent.sessionKey,
+          })),
+        },
       }
     },
   }
@@ -609,5 +631,11 @@ export function registerSubagentTools(
     jobContexts.clear()
   })
 
-  return { runSubAgentsTool, joinSubAgentsTool }
+  return {
+    runSubAgentsTool,
+    joinSubAgentsTool,
+    dispatchIsolated,
+    join: (jobId, signal) => jobs.join(jobId, signal),
+    cancel: jobId => jobs.cancel(jobId),
+  }
 }

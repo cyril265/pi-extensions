@@ -42,7 +42,7 @@ function result(text: string): SubagentRunResult {
 test('tells assigned agents not to call locked subagent tools', () => {
   assert.equal(
     getParentAssignedPrompt('Review the change.'),
-    'Review the change.\n\nDo not call runSubAgents, joinSubAgents, or runSubAgentsWithContext during this run; those tools are unavailable.',
+    'Review the change.\n\nDo not call runSubAgents, joinSubAgents, runSubAgentsWithContext, or the subagent CLI during this run; they are unavailable.',
   )
 })
 

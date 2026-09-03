@@ -20,6 +20,11 @@ import {
 } from './script-tool.ts'
 import { registerSubagentTools, type RegisteredSubagentTools } from './tools.ts'
 
+type ScriptSubagentTools = Pick<
+  RegisteredSubagentTools,
+  'runSubAgentsTool' | 'joinSubAgentsTool'
+>
+
 function value(text: string): NodeScriptToolValue {
   return {
     text,
@@ -301,7 +306,7 @@ test('agentWorkflowScript invokes the registered subagent definition', async () 
       }
     },
   }
-  const integration: RegisteredSubagentTools = {
+  const integration: ScriptSubagentTools = {
     runSubAgentsTool:
       runSubAgentsTool as unknown as RegisteredSubagentTools['runSubAgentsTool'],
     joinSubAgentsTool:
