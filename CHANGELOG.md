@@ -2,6 +2,12 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-09-05
+
+### astra-reasoning
+
+- Added standalone native Astra reasoning updates for Pi's thinking selector, with persisted history and no provider replacement.
+
 ## 2026-09-03
 
 ### simple-subagent

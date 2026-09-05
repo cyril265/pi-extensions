@@ -21,6 +21,7 @@ Global settings live in `~/.pi/agent/settings.json`, project settings in `.pi/se
 
 | Package | What it does |
 | --- | --- |
+| [`astra-reasoning`](astra-reasoning) | Preserves Astra's request prefix when changing thinking levels through native Codex configuration updates. |
 | [`simple-subagent`](simple-subagent) | `runSubAgents({ agents: [...] })` — runs isolated subagents, returns result file paths. Optional context-forking tool. |
 | [`prewalk`](prewalk) | Transparent [Prewalk](https://stencil.so/blog/prewalk)-style handoff on top of `simple-subagent`: frontier model explores, cheaper model executes. |
 | [`cwd`](cwd) | `/cwd` — continue the current session in another working directory without losing history. |
