@@ -7,7 +7,9 @@ No tools, commands, provider replacements, or settings.
 ## Install
 
 ```bash
-pi install /Users/kpovolotskyy/ai-stuff/pi-extensions/astra-reasoning
+gh repo clone https://github.com/cyril265/pi-extensions
+cd "$PWD/pi-extensions"
+pi install "$PWD/astra-reasoning"
 ```
 
 Then run `/reload`. Tested with Pi 0.85.1.
@@ -44,8 +46,10 @@ This package does not depend on it.
 
 ## Tests
 
+From the cloned repository root:
+
 ```bash
-cd /Users/kpovolotskyy/ai-stuff/pi-extensions/astra-reasoning
+cd "$PWD/astra-reasoning"
 npm ci --ignore-scripts
 npm run typecheck
 npm run test:live

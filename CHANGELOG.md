@@ -7,6 +7,7 @@ All notable changes to this repository are documented here.
 ### astra-reasoning
 
 - Added standalone native Astra reasoning updates for Pi's thinking selector, with persisted history and no provider replacement.
+- Replaced machine-specific installation and test paths with instructions for a cloned checkout.
 
 ## 2026-09-03
 
