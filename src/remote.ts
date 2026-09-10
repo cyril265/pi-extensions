@@ -47,6 +47,17 @@ export function isSshHostUnreachableError(error: unknown): error is SshHostUnrea
   return error instanceof SshHostUnreachableError;
 }
 
+export class SshKeyLockedError extends Error {
+  constructor() {
+    super("Your SSH key is locked");
+    this.name = "SshKeyLockedError";
+  }
+}
+
+export function isSshKeyLockedError(error: unknown): error is SshKeyLockedError {
+  return error instanceof SshKeyLockedError;
+}
+
 export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
@@ -126,7 +137,7 @@ function rejectRemoteFailure(
   marker?: string,
 ): void {
   if (lockedKeyMessage(`${stdout}\n${stderr}`)) {
-    reject(new Error("Your SSH key is locked"));
+    reject(new SshKeyLockedError());
     return;
   }
   const markedExit = marker ? remoteExit(stderr, marker) : undefined;
@@ -393,7 +404,7 @@ export async function attachHerdrTerminal(
       activeWatcher.once("error", (error) => settle(error));
       activeWatcher.once("close", (code, signal) => {
         if (lockedKeyMessage(watcherError)) {
-          settle(new Error("Your SSH key is locked"));
+          settle(new SshKeyLockedError());
           return;
         }
         if (code === 255 && !remoteExit(watcherError, watcherSsh.marker)) {
@@ -411,7 +422,7 @@ export async function attachHerdrTerminal(
       if (stoppingWatcher) return;
       const detail = watcherError.trim() || (signal ? `ssh received ${signal}` : `ssh exited with status ${code}`);
       if (lockedKeyMessage(detail)) {
-        watcherFailure = new Error("Your SSH key is locked");
+        watcherFailure = new SshKeyLockedError();
       } else if (code === 255 && !remoteExit(watcherError, watcherSsh.marker)) {
         watcherFailure = new SshHostUnreachableError("ssh", watcherOutput, watcherError);
       } else {
@@ -524,7 +535,7 @@ export async function attachHerdrTerminal(
           }
           const detail = controllerError.trim() || (signal ? `ssh received ${signal}` : `ssh exited with status ${code}`);
           if (lockedKeyMessage(detail)) {
-            reject(new Error("Your SSH key is locked"));
+            reject(new SshKeyLockedError());
             return;
           }
           if (code === 255 && !remoteExit(controllerError, controllerSsh.marker)) {

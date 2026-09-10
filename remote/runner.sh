@@ -102,11 +102,9 @@ cd "$repository" || fail "Cannot enter remote repository"
 write_state preparing
 rm -f "$control/active-session"
 
-set +e
 pi_args=("$trust_mode" --session "$session" --extension "$companion")
 PI_REMOTE_HANDOFF_CONTROL="$control" PI_CODING_AGENT_DIR="$agent_dir" "$pi_command" "${pi_args[@]}"
 pi_status=$?
-set -e
 pi_log_temporary="$control/pi.log.tmp"
 rm -f "$pi_log_temporary"
 "$herdr_command" --session "$herdr_session" pane read "$herdr_pane" \
