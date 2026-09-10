@@ -54,8 +54,8 @@ type PreparedResultObservation =
 export type RemoteWorkspaceStatus =
   | { kind: "incomplete"; error?: string }
   | { kind: "active"; state: RemoteLifecycleState }
-  | { kind: "stopped"; state: RemoteLifecycleState; error?: string }
-  | { kind: "prepared"; state: RemoteLifecycleState; processRunning: boolean; error?: string };
+  | { kind: "stopped"; error?: string }
+  | { kind: "prepared"; state: RemoteLifecycleState; error?: string };
 
 export interface RemoteWorkspaceObservation {
   status: RemoteWorkspaceStatus;
@@ -72,6 +72,7 @@ interface RemoteWorkspacePaths {
   runner: string;
   companion: string;
   prepareProfile: string;
+  validateAuthentication: string;
   session: string;
   resultBundle: string;
 }
@@ -137,15 +138,8 @@ interface ControlObservation {
   resultLaunchId: string | null;
   runnerLaunchId: string | null;
   paneId: string | null;
-  runnerPid: number | null;
   resultBundle: boolean;
   processRunning: boolean;
-}
-
-interface HerdrServerStatus {
-  running: boolean;
-  version: string | null;
-  compatible: boolean | null;
 }
 
 const observeScript = String.raw`
@@ -218,7 +212,6 @@ process.stdout.write(JSON.stringify({
   resultLaunchId: read("result/result-launch-id"),
   runnerLaunchId: runner === null ? null : runner.launchId,
   paneId: pane,
-  runnerPid: runner === null ? null : String(runner.pid),
   resultBundle: file("result/result.bundle"),
   processRunning,
   server,
@@ -381,33 +374,9 @@ stopAndDeleteSession();
 throw new Error("Remote Pi runner did not acknowledge its launch ID within 10 seconds");
 `;
 
-const credentialValidationScript = String.raw`
-const validCredential = (credential) => {
-  if (credential === null || typeof credential !== "object" || Array.isArray(credential)) return false;
-  if (credential.type === "api_key") {
-    if (Object.hasOwn(credential, "key") && typeof credential.key !== "string") return false;
-    if (!Object.hasOwn(credential, "env")) return true;
-    return credential.env !== null
-      && typeof credential.env === "object"
-      && !Array.isArray(credential.env)
-      && Object.values(credential.env).every((entry) => typeof entry === "string");
-  }
-  return credential.type === "oauth"
-    && typeof credential.access === "string"
-    && typeof credential.refresh === "string"
-    && typeof credential.expires === "number"
-    && Number.isFinite(credential.expires);
-};
-const validAuthentication = (authentication) => authentication !== null
-  && typeof authentication === "object"
-  && !Array.isArray(authentication)
-  && Object.values(authentication).every(validCredential);
-`;
-
 const validateRemoteProfileScript = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
-${credentialValidationScript}
 try {
   const profile = process.argv[1];
   const home = path.join(profile, "home");
@@ -421,28 +390,12 @@ try {
   };
   const manifest = regularJson(path.join(profile, "profile.json"));
   regularJson(path.join(agent, "settings.json"));
-  const authentication = regularJson(path.join(agent, "auth.json"));
-  if (!validAuthentication(authentication)) process.exit(1);
   if (manifest.version !== 1 || !Array.isArray(manifest.packageDirectories)) process.exit(1);
   for (const entry of manifest.packageDirectories) {
     if (typeof entry !== "string") process.exit(1);
     const target = path.resolve(home, entry);
     if ((target !== home && !target.startsWith(home + path.sep)) || !fs.statSync(target).isDirectory()) process.exit(1);
   }
-} catch {
-  process.exit(1);
-}
-`;
-
-const validateRemoteAuthenticationScript = String.raw`
-const fs = require("node:fs");
-${credentialValidationScript}
-try {
-  const target = process.argv[1];
-  const stat = fs.lstatSync(target);
-  if (!stat.isFile() || stat.isSymbolicLink()) process.exit(1);
-  const authentication = JSON.parse(fs.readFileSync(target, "utf8"));
-  if (!validAuthentication(authentication)) process.exit(1);
 } catch {
   process.exit(1);
 }
@@ -493,16 +446,7 @@ function parsePaneId(value: unknown): string | null {
   return paneId;
 }
 
-function parseRunnerPid(value: unknown): number | null {
-  const pid = trimmedString(value, "runnerPid");
-  if (pid === null) return null;
-  if (!/^[1-9]\d*$/.test(pid)) throw new Error(`Remote runner PID is malformed: ${JSON.stringify(pid)}`);
-  const parsed = Number(pid);
-  if (!Number.isSafeInteger(parsed)) throw new Error(`Remote runner PID is malformed: ${JSON.stringify(pid)}`);
-  return parsed;
-}
-
-function parseServerStatus(value: unknown, task: TaskState): HerdrServerStatus {
+function parseServerStatus(value: unknown, task: TaskState): boolean {
   if (
     !isRecord(value)
     || typeof value.running !== "boolean"
@@ -517,7 +461,7 @@ function parseServerStatus(value: unknown, task: TaskState): HerdrServerStatus {
       `Remote Herdr session ${JSON.stringify(task.herdrSession)} uses ${JSON.stringify(value.version)}; expected ${task.herdrVersion}.`,
     );
   }
-  return { running: value.running, version: value.version, compatible: value.compatible };
+  return value.running;
 }
 
 function parseControlObservation(
@@ -528,8 +472,8 @@ function parseControlObservation(
   if (!isRecord(value) || typeof value.resultBundle !== "boolean" || typeof value.processRunning !== "boolean") {
     throw new Error(`Remote workspace observation has an invalid shape: ${JSON.stringify(value)}`);
   }
-  const server = parseServerStatus(value.server, task);
-  if (value.processRunning && !server.running) {
+  const serverRunning = parseServerStatus(value.server, task);
+  if (value.processRunning && !serverRunning) {
     throw new Error("Remote observation reports a live runner without a live Herdr session.");
   }
   return {
@@ -540,7 +484,6 @@ function parseControlObservation(
     resultLaunchId: trimmedString(value.resultLaunchId, "resultLaunchId"),
     runnerLaunchId: trimmedString(value.runnerLaunchId, "runnerLaunchId"),
     paneId: parsePaneId(value.paneId),
-    runnerPid: parseRunnerPid(value.runnerPid),
     resultBundle: value.resultBundle,
     processRunning: value.processRunning,
   };
@@ -594,8 +537,8 @@ function workspaceStatus(
   if (result.kind === "prepared") {
     if (control.state === null) throw new Error("A prepared remote result has no lifecycle state.");
     return control.error
-      ? { kind: "prepared", state: control.state, processRunning: control.processRunning, error: control.error }
-      : { kind: "prepared", state: control.state, processRunning: control.processRunning };
+      ? { kind: "prepared", state: control.state, error: control.error }
+      : { kind: "prepared", state: control.state };
   }
   if (launch.kind === "conflicting") {
     return { kind: "incomplete", error: `Remote workspace belongs to launch ${launch.recordedLaunchId}.` };
@@ -611,9 +554,7 @@ function workspaceStatus(
   if (result.kind === "mismatched" && control.state === "prepared") {
     return { kind: "incomplete", error: "Remote result does not belong to this launch." };
   }
-  return control.error
-    ? { kind: "stopped", state: control.state, error: control.error }
-    : { kind: "stopped", state: control.state };
+  return control.error ? { kind: "stopped", error: control.error } : { kind: "stopped" };
 }
 
 function validateLaunchResult(contents: string): void {
@@ -643,7 +584,7 @@ function validateHerdrMutation(contents: string, task: TaskState, operation: "st
   }
 }
 
-async function herdrServerStatus(task: TaskState): Promise<HerdrServerStatus> {
+async function herdrServerRunning(task: TaskState): Promise<boolean> {
   const result = await ssh(
     task.host,
     remoteCommand([
@@ -659,8 +600,7 @@ async function herdrServerStatus(task: TaskState): Promise<HerdrServerStatus> {
 }
 
 async function stopRecordedHerdrSession(task: TaskState): Promise<void> {
-  const status = await herdrServerStatus(task);
-  if (!status.running) return;
+  if (!await herdrServerRunning(task)) return;
   const result = await ssh(
     task.host,
     remoteCommand([task.remoteHerdrCommand, "session", "stop", task.herdrSession, "--json"]),
@@ -693,6 +633,7 @@ function remoteWorkspacePaths(task: TaskState): RemoteWorkspacePaths {
     runner: `${control}/runner.sh`,
     companion: `${control}/companion.ts`,
     prepareProfile: `${control}/prepare-profile.sh`,
+    validateAuthentication: `${control}/validate-authentication.js`,
     session: `${control}/session.jsonl`,
     resultBundle: `${control}/result/result.bundle`,
   };
@@ -752,10 +693,11 @@ export async function provisionInitialRemoteWorkspace(
   await scpTo(task.host, options.artifacts.profileArchive, `${paths.control}/profile.tar.gz`);
   await scpTo(task.host, options.artifacts.authenticationBaseline, `${paths.control}/initial-auth.json`);
   await scpTo(task.host, prepareProfile, paths.prepareProfile);
+  await scpTo(task.host, join(packageRoot, "remote", "validate-authentication.js"), paths.validateAuthentication);
   await ssh(
     task.host,
     [
-      `chmod 600 ${shellQuote(`${paths.control}/handoff.bundle`)} ${shellQuote(paths.session)} ${shellQuote(`${paths.control}/profile.tar.gz`)} ${shellQuote(`${paths.control}/initial-auth.json`)}`,
+      `chmod 600 ${shellQuote(`${paths.control}/handoff.bundle`)} ${shellQuote(paths.session)} ${shellQuote(`${paths.control}/profile.tar.gz`)} ${shellQuote(`${paths.control}/initial-auth.json`)} ${shellQuote(paths.validateAuthentication)}`,
       `chmod 700 ${shellQuote(paths.prepareProfile)}`,
     ].join(" && "),
   );
@@ -974,16 +916,12 @@ async function remotePiEnvironmentProblems(
 ): Promise<RemotePiEnvironmentProblem[]> {
   const paths = remoteWorkspacePaths(task);
   const validateProfile = remoteCommand(["node", "-e", validateRemoteProfileScript, paths.profile]);
-  const validateAuthentication = remoteCommand([
-    "node",
-    "-e",
-    validateRemoteAuthenticationScript,
-    `${task.remoteAgentDir}/auth.json`,
-  ]);
+  const validateAuthentication = remoteCommand(["node", paths.validateAuthentication, `${task.remoteAgentDir}/auth.json`]);
+  await scpTo(task.host, join(packageRoot, "remote", "validate-authentication.js"), paths.validateAuthentication);
   const result = await ssh(
     task.host,
     [
-      `if ! test -d ${shellQuote(task.remoteAgentDir)} || ! test -f ${shellQuote(`${task.remoteAgentDir}/settings.json`)} || ! test -f ${shellQuote(`${paths.profile}/profile.json`)}; then printf 'profile-missing\\n'; elif ${validateProfile}; then :; else printf 'profile-invalid\\n'; fi`,
+      `if ! test -d ${shellQuote(task.remoteAgentDir)} || ! test -f ${shellQuote(`${task.remoteAgentDir}/settings.json`)} || ! test -f ${shellQuote(`${paths.profile}/profile.json`)}; then printf 'profile-missing\\n'; elif ${validateProfile} && ${validateAuthentication}; then :; else printf 'profile-invalid\\n'; fi`,
       `if ${validateAuthentication}; then :; else printf 'authentication-missing\\n'; fi`,
       `if ! test -x ${shellQuote(task.remotePiCommand)}; then printf 'runtime-missing\\n'; elif test "$(${shellQuote(task.remotePiCommand)} --version 2>/dev/null)" != ${shellQuote(piVersion)}; then printf 'runtime-version\\n'; fi`,
     ].join("\n"),

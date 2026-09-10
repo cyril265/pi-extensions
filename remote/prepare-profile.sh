@@ -29,42 +29,6 @@ case "$authentication_mode" in
     ;;
 esac
 
-valid_authentication() {
-  node - "$1" <<'NODE'
-const fs = require("node:fs");
-
-try {
-  const authentication = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-  if (authentication === null || typeof authentication !== "object" || Array.isArray(authentication)) process.exit(1);
-  for (const credential of Object.values(authentication)) {
-    if (credential === null || typeof credential !== "object" || Array.isArray(credential)) process.exit(1);
-    if (credential.type === "api_key") {
-      if (Object.hasOwn(credential, "key") && typeof credential.key !== "string") process.exit(1);
-      if (Object.hasOwn(credential, "env")) {
-        const env = credential.env;
-        if (
-          env === null ||
-          typeof env !== "object" ||
-          Array.isArray(env) ||
-          !Object.values(env).every((entry) => typeof entry === "string")
-        ) process.exit(1);
-      }
-    } else if (
-      credential.type !== "oauth" ||
-      typeof credential.access !== "string" ||
-      typeof credential.refresh !== "string" ||
-      typeof credential.expires !== "number" ||
-      !Number.isFinite(credential.expires)
-    ) {
-      process.exit(1);
-    }
-  }
-} catch {
-  process.exit(1);
-}
-NODE
-}
-
 runtime_parent=$(dirname "$runtime")
 mkdir -p "$runtime_parent"
 chmod 700 "$runtime_parent"
@@ -72,6 +36,7 @@ chmod 700 "$runtime_parent"
 if [[ "$mode" != runtime ]]; then
   agent_dir="$profile/home/.pi/agent"
   initial_auth="$(dirname "$archive")/initial-auth.json"
+  validate_authentication="$(dirname "$archive")/validate-authentication.js"
   profile_candidate="${profile}.tmp.$$"
   profile_backup="${profile}.previous.$$"
   dependency_cache="$runtime_parent/package-dependencies"
@@ -79,12 +44,12 @@ if [[ "$mode" != runtime ]]; then
   chmod 700 "$dependency_cache"
 
   if [[ "$authentication_mode" == initial ]]; then
-    if [[ ! -f "$initial_auth" || -L "$initial_auth" ]] || ! valid_authentication "$initial_auth"; then
+    if ! node "$validate_authentication" "$initial_auth"; then
       printf 'Initial workspace authentication is missing or invalid.\n' >&2
       exit 1
     fi
   else
-    if [[ ! -f "$agent_dir/auth.json" || -L "$agent_dir/auth.json" ]] || ! valid_authentication "$agent_dir/auth.json"; then
+    if ! node "$validate_authentication" "$agent_dir/auth.json"; then
       printf 'Existing private workspace authentication is missing or invalid.\n' >&2
       exit 1
     fi
