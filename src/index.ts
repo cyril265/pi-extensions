@@ -84,7 +84,6 @@ import {
   type ApplyingTaskState,
   type ApplyPlan,
   type CleanupPendingTaskState,
-  type PendingAuthentication,
   type PreparedTaskState,
   type RemoteOwnedTaskState,
   type ReservedTaskState,
