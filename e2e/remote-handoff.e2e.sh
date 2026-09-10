@@ -5,9 +5,6 @@ set -euo pipefail
 PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 REAL_AGENT_DIR=${PI_REMOTE_HANDOFF_E2E_SOURCE_AGENT_DIR:-${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}}
 AUTHORITATIVE_TASK=${PI_REMOTE_HANDOFF_E2E_PROTECTED_TASK:-}
-if [[ -z "$AUTHORITATIVE_TASK" && -f /Users/kpovolotskyy/ai-stuff/pi-extensions/.git/pi-remote-handoff/task.json ]]; then
-  AUTHORITATIVE_TASK=/Users/kpovolotskyy/ai-stuff/pi-extensions/.git/pi-remote-handoff/task.json
-fi
 UI_TIMEOUT=${PI_REMOTE_HANDOFF_E2E_UI_TIMEOUT_SECONDS:-180}
 START_TIMEOUT=${PI_REMOTE_HANDOFF_E2E_START_TIMEOUT_SECONDS:-900}
 REMOTE_IDLE_TIMEOUT=${PI_REMOTE_HANDOFF_E2E_REMOTE_IDLE_TIMEOUT_SECONDS:-600}
@@ -120,7 +117,7 @@ safe_fixture_cleanup() {
       [[ "$ref" == refs/pi-remote-handoff/* ]] || continue
       git -C "$repo" update-ref -d "$ref" >/dev/null 2>&1 || true
     done < <(git -C "$repo" for-each-ref --format='%(refname)' refs/pi-remote-handoff/ 2>/dev/null)
-    rm -rf -- "$git_dir/pi-remote-handoff" "$git_dir/pi-remote-handoff.operation" "$git_dir/pi-cloud-resume"
+    rm -rf -- "$git_dir/pi-remote-handoff" "$git_dir/pi-remote-handoff.operation"
   done < "$FIXTURES"
 }
 
@@ -236,11 +233,35 @@ make_repo() {
   printf '%s\n' "$base"
 }
 
+make_directory() {
+  local label=$1
+  local base="$ROOT/$label"
+  local dir="$base/project"
+  mkdir -p "$dir" "$base/home"
+  ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || fail
+  printf 'base\n' > "$dir/base.txt"
+  printf 'ignored.txt\n' > "$dir/.gitignore"
+  printf 'ignored\n' > "$dir/ignored.txt"
+  printf '%s\n' "$dir" >> "$FIXTURES"
+  make_profile "$base/profile"
+  printf '%s\n' "$base"
+}
+
+directory_namespace() {
+  local dir=$1 hash
+  hash=$(printf '%s' "$(cd "$dir" && pwd -P)" | shasum -a 256 | cut -d' ' -f1)
+  printf '%s/profile/remote-handoff/directories/%s\n' "$(dirname "$dir")" "$hash"
+}
+
 task_file() {
   local repo=$1
-  local git_dir
-  git_dir=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
-  printf '%s/pi-remote-handoff/task.json\n' "$git_dir"
+  local namespace
+  if [[ -d "$repo/.git" ]]; then
+    namespace=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+  else
+    namespace=$(directory_namespace "$repo")
+  fi
+  printf '%s/pi-remote-handoff/task.json\n' "$namespace"
 }
 
 record_task_resources() {
@@ -552,6 +573,17 @@ assert_clean_handoff() {
   assert_remote_absent "$remote_dir" "$herdr_command" "$herdr_session"
 }
 
+assert_clean_directory_handoff() {
+  local dir=$1 remote_dir=$2 herdr_command=$3 herdr_session=$4
+  local namespace
+  namespace=$(directory_namespace "$dir")
+  [[ ! -e "$namespace/pi-remote-handoff/task.json" ]] || fail
+  [[ ! -e "$namespace/pi-remote-handoff" ]] || fail
+  [[ ! -e "$namespace/repository.git" ]] || fail
+  [[ ! -e "$dir/.git" ]] || fail
+  assert_remote_absent "$remote_dir" "$herdr_command" "$herdr_session"
+}
+
 stop_controller() {
   local name=$1 base=$2 pid deadline
   safe_local_session_cleanup "$name"
@@ -654,6 +686,85 @@ scenario_direct_apply() {
   grep -F 'remote.txt' "$original" >/dev/null || fail
   [[ "$review_before" == "$(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'pi-remote-handoff-review-*' -print | sort)" ]] || fail
   assert_clean_handoff "$repo" "$remote_dir" "$remote_herdr" "$remote_session"
+  assert_no_driver_errors "$name" "$pane"
+  stop_controller "$name" "$base"
+  remove_scenario_fixture "$base"
+  pass
+}
+
+scenario_directory_apply() {
+  step 'directory apply: setup'
+  local base dir original controller name pane namespace task remote_dir remote_herdr remote_session
+  base=$(make_directory directory)
+  dir="$base/project"
+  original="$base/original.jsonl"
+  namespace=$(directory_namespace "$dir")
+  [[ ! -e "$dir/.git" ]] || fail
+  [[ ! -e "$namespace" ]] || fail
+  controller=$(start_controller "$base" "$dir" "$original")
+  name=${controller%%$'\t'*}; pane=${controller#*$'\t'}
+  pass
+
+  step 'directory apply: start with private Git database'
+  send_text_enter "$name" "$pane" /remote-handoff
+  wait_visible "$name" "$pane" 'start: hand off this conversation'
+  send_key "$name" "$pane" enter
+  wait_task_phase "$dir" active "$START_TIMEOUT"
+  record_task_resources "$dir"
+  task=$(task_file "$dir")
+  remote_dir=$(jq -r '.remoteDir' "$task")
+  remote_herdr=$(jq -r '.remoteHerdrCommand' "$task")
+  remote_session=$(jq -r '.herdrSession' "$task")
+  [[ "$task" == "$namespace/pi-remote-handoff/task.json" ]] || fail
+  [[ $(jq -r '.repositoryKind' "$task") == directory ]] || fail
+  [[ $(jq -r '.repoRoot' "$task") == "$(cd "$dir" && pwd -P)" ]] || fail
+  [[ $(jq -r '.commonGitDir' "$task") == "$namespace" ]] || fail
+  [[ $(jq -r '.privateGitDir' "$task") == "$namespace/repository.git" ]] || fail
+  [[ -d "$namespace/repository.git" ]] || fail
+  [[ ! -e "$dir/.git" ]] || fail
+  wait_remote_state "$dir" idle "$REMOTE_IDLE_TIMEOUT"
+  wait_remote_file_content "$remote_dir/repository/base.txt" base
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "test ! -e $(printf %q "$remote_dir/repository/ignored.txt")" || fail
+  pass
+
+  step 'directory apply: remote edit'
+  send_text_enter "$name" "$pane" "!bash -c \"printf 'remote-only\\n' > remote.txt\""
+  wait_remote_file_content "$remote_dir/repository/remote.txt" remote-only
+  wait_remote_state "$dir" idle "$UI_TIMEOUT"
+  [[ ! -e "$dir/remote.txt" ]] || fail
+  [[ ! -e "$dir/.git" ]] || fail
+  pass
+
+  step 'directory apply: stop through remote companion'
+  send_text_enter "$name" "$pane" /remote-handoff
+  wait_visible "$name" "$pane" 'Stop and prepare result'
+  choose_down "$name" "$pane" 1
+  confirm_yes "$name" "$pane" 'Abort the active turn, stop Pi, and prepare the result?'
+  wait_remote_state "$dir" prepared "$START_TIMEOUT"
+  wait_task_phase "$dir" prepared "$UI_TIMEOUT"
+  wait_local_controller_ready "$name" "$pane" "$dir"
+  pass
+
+  step 'directory apply: apply and clean up'
+  local apply_view
+  open_prepared_menu "$name" "$pane"
+  choose_down "$name" "$pane" 2
+  wait_visible "$name" "$pane" 'Changes apply will make' "$START_TIMEOUT"
+  apply_view=$(pane_visible "$name" "$pane")
+  grep -F 'remote.txt' <<<"$apply_view" >/dev/null || fail
+  ! grep -F 'ignored.txt' <<<"$apply_view" >/dev/null || fail
+  close_text_viewer "$name" "$pane"
+  confirm_yes "$name" "$pane" 'Return the reviewed conversation and apply these file changes without staging them?'
+  local deadline=$((SECONDS + START_TIMEOUT))
+  while (( SECONDS < deadline )) && [[ -e "$task" ]]; do sleep 0.5; done
+  [[ ! -e "$task" ]] || fail
+  [[ $(cat "$dir/remote.txt") == remote-only ]] || fail
+  [[ $(cat "$dir/base.txt") == base ]] || fail
+  [[ $(cat "$dir/ignored.txt") == ignored ]] || fail
+  [[ -f "$original" ]] || fail
+  [[ $(jq -r '.cwd' <<<"$(sed -n '1p' "$original")") == "$(cd "$dir" && pwd -P)" ]] || fail
+  grep -F 'remote.txt' "$original" >/dev/null || fail
+  assert_clean_directory_handoff "$dir" "$remote_dir" "$remote_herdr" "$remote_session"
   assert_no_driver_errors "$name" "$pane"
   stop_controller "$name" "$base"
   remove_scenario_fixture "$base"
@@ -790,54 +901,15 @@ scenario_restart_discard() {
   pass
 }
 
-scenario_namespace_guard() {
-  step 'namespace guard: pre-rename marker'
-  local base repo original controller name pane git_dir old new output expected resource_count
-  base=$(make_repo namespace)
-  repo="$base/repo"; original="$base/original.jsonl"
-  git_dir=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
-  old="$git_dir/pi-cloud-resume/task.json"
-  new="$git_dir/pi-remote-handoff/task.json"
-  resource_count=$(wc -l < "$REMOTE_RESOURCES" | tr -d ' ')
-  mkdir -p "$(dirname "$old")"
-  printf '{"version":7}\n' > "$old"
-  controller=$(start_controller "$base" "$repo" "$original")
-  name=${controller%%$'\t'*}; pane=${controller#*$'\t'}
-  send_text_enter "$name" "$pane" /remote-handoff
-  wait_visible "$name" "$pane" 'A pre-rename version 7 Remote Handoff exists'
-  output=$(pane_recent "$name" "$pane")
-  expected="A pre-rename version 7 Remote Handoff exists at \"$old\". Finish or discard it with the pre-rename extension before starting a new handoff in this repository."
-  assert_ui_message "$output" "$expected"
-  [[ ! -e "$new" ]] || fail
-  [[ -z $(git -C "$repo" for-each-ref --format='%(refname)' refs/pi-remote-handoff/) ]] || fail
-  [[ $(wc -l < "$REMOTE_RESOURCES" | tr -d ' ') -eq $resource_count ]] || fail
-  pass
-
-  step 'namespace guard: dual task recovery error'
-  mkdir -p "$(dirname "$new")"
-  printf '{"version":7}\n' > "$new"
-  send_text_enter "$name" "$pane" /remote-handoff
-  wait_visible "$name" "$pane" 'Remote Handoff found both task files:'
-  output=$(pane_recent "$name" "$pane")
-  expected="Remote Handoff found both task files: \"$old\" and \"$new\". Choose the authoritative handoff, safely discard the other one, then retry."
-  assert_ui_message "$output" "$expected"
-  [[ $(find "$git_dir" -maxdepth 2 -path '*/pi-remote-handoff/task.json' -o -path '*/pi-cloud-resume/task.json' | wc -l | tr -d ' ') -eq 2 ]] || fail
-  [[ -z $(git -C "$repo" for-each-ref --format='%(refname)' refs/pi-remote-handoff/) ]] || fail
-  [[ $(wc -l < "$REMOTE_RESOURCES" | tr -d ' ') -eq $resource_count ]] || fail
-  stop_controller "$name" "$base"
-  remove_scenario_fixture "$base"
-  pass
-}
-
 if [[ $# -ne 0 ]]; then
-  printf 'Usage: E2E_SCENARIO=[all|direct|merge|restart|namespace] npm run verify:e2e\n' >&2
+  printf 'Usage: E2E_SCENARIO=[all|direct|directory|merge|restart] npm run verify:e2e\n' >&2
   exit 2
 fi
 REQUESTED_SCENARIO=${E2E_SCENARIO:-all}
 case "$REQUESTED_SCENARIO" in
-  all | direct | merge | restart | namespace) ;;
+  all | direct | directory | merge | restart) ;;
   *)
-    printf 'Usage: E2E_SCENARIO=[all|direct|merge|restart|namespace] npm run verify:e2e\n' >&2
+    printf 'Usage: E2E_SCENARIO=[all|direct|directory|merge|restart] npm run verify:e2e\n' >&2
     exit 2
     ;;
 esac
@@ -875,16 +947,16 @@ if [[ "$REQUESTED_SCENARIO" == all || "$REQUESTED_SCENARIO" == direct ]]; then
   scenario_direct_apply
   scenario_count=$((scenario_count + 1))
 fi
+if [[ "$REQUESTED_SCENARIO" == all || "$REQUESTED_SCENARIO" == directory ]]; then
+  scenario_directory_apply
+  scenario_count=$((scenario_count + 1))
+fi
 if [[ "$REQUESTED_SCENARIO" == all || "$REQUESTED_SCENARIO" == merge ]]; then
   scenario_merge_review
   scenario_count=$((scenario_count + 1))
 fi
 if [[ "$REQUESTED_SCENARIO" == all || "$REQUESTED_SCENARIO" == restart ]]; then
   scenario_restart_discard
-  scenario_count=$((scenario_count + 1))
-fi
-if [[ "$REQUESTED_SCENARIO" == all || "$REQUESTED_SCENARIO" == namespace ]]; then
-  scenario_namespace_guard
   scenario_count=$((scenario_count + 1))
 fi
 
