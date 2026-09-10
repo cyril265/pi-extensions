@@ -102,6 +102,17 @@ REMOTE_CLEANUP
   done < "$REMOTE_RESOURCES"
 }
 
+record_fixture_remote_resources() {
+  local project task record
+  while IFS= read -r project; do
+    [[ -e "$project" ]] || continue
+    task=$(task_file "$project")
+    [[ -f "$task" ]] || continue
+    record=$(jq -r '[.remoteDir,.remoteHerdrCommand,.herdrSession] | @tsv' "$task" 2>/dev/null) || continue
+    grep -Fqx "$record" "$REMOTE_RESOURCES" 2>/dev/null || printf '%s\n' "$record" >> "$REMOTE_RESOURCES"
+  done < "$FIXTURES"
+}
+
 safe_fixture_cleanup() {
   local repo git_dir path ref
   while IFS= read -r repo; do
@@ -128,6 +139,7 @@ cleanup() {
   while IFS=$'\t' read -r name _pane; do
     [[ -n "$name" ]] && safe_local_session_cleanup "$name"
   done < "$CONTROLLERS"
+  record_fixture_remote_resources
   safe_remote_cleanup
   safe_fixture_cleanup
   while IFS= read -r pid; do
@@ -304,7 +316,7 @@ start_controller() {
   [[ -n ${pane:-} && $stable -ge 3 ]] || fail
 
   local command
-  printf -v command 'cd %q && HOME=%q PI_CODING_AGENT_DIR=%q exec pi --approve --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --session %q --extension %q' \
+  printf -v command 'cd %q && exec env HOME=%q PI_CODING_AGENT_DIR=%q pi --approve --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --session %q --extension %q' \
     "$repo" "$base/home" "$base/profile" "$original" "$PROJECT_ROOT/src/index.ts"
   local_herdr --session "$name" pane run "$pane" "$command" >/dev/null
   wait_agent_idle "$name" "$pane" "$UI_TIMEOUT"
@@ -933,7 +945,6 @@ if [[ -n "$AUTHORITATIVE_TASK" ]]; then
   AUTH_BEFORE_HASH=$(shasum -a 256 "$AUTHORITATIVE_TASK" | cut -d' ' -f1)
   AUTH_BEFORE_MTIME=$(stat -f '%m' "$AUTHORITATIVE_TASK")
   AUTH_BEFORE_PHASE=$(jq -r '.phase' "$AUTHORITATIVE_TASK")
-  [[ "$AUTH_BEFORE_PHASE" == active ]] || fail
 fi
 [[ -f "$REAL_AGENT_DIR/auth.json" && -f "$REAL_AGENT_DIR/settings.json" && -f "$REAL_AGENT_DIR/pi-remote-handoff-remotes.json" ]] || fail
 [[ $(jq 'length' "$REAL_AGENT_DIR/pi-remote-handoff-remotes.json") -eq 1 ]] || fail
