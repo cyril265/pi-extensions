@@ -2,6 +2,20 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-09-11
+
+### remote-handoff
+
+- Added the Remote Handoff extension to this repository with its standalone history.
+- Supported ordinary directories through a private Git database under the Pi agent directory.
+- Blocked conversation actions when the handoff lookup fails instead of treating the failure as "no handoff". Start preconditions (no commits, storage location) moved out of lookup.
+- Replaced error-message matching with `SshKeyLockedError` and `LocalFilesChangedError`.
+- Removed the pre-rename `pi-cloud-resume` compatibility code and its e2e scenario.
+- Shared error, path, JSON, and atomic-write helpers across modules. Removed unread remote status fields and the unused `RemoteCommandError`.
+- Replaced three copies of the credential validator with one `remote/validate-authentication.cjs`.
+- Fixed `remote/runner.sh` so result-preparation failures are recorded instead of exiting silently.
+- Added an ordinary-directory e2e scenario and fixed e2e profile isolation under fish.
+
 ## 2026-09-05
 
 ### astra-reasoning
