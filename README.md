@@ -191,4 +191,4 @@ Run the full real end-to-end verification after lifecycle changes:
 npm run verify:e2e
 ```
 
-This uses the configured SSH host, real Pi credentials, real Herdr sessions, and a real merge-review model call. It creates isolated temporary repositories and profiles and cleans them afterward. Run one scenario with `E2E_SCENARIO=direct|merge|restart|namespace`.
+This uses the configured SSH host, real Pi credentials, real Herdr sessions, and a real merge-review model call. It creates isolated temporary repositories and profiles and cleans them afterward. Run one scenario with `E2E_SCENARIO=direct|directory|merge|restart`.
