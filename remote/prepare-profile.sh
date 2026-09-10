@@ -36,7 +36,7 @@ chmod 700 "$runtime_parent"
 if [[ "$mode" != runtime ]]; then
   agent_dir="$profile/home/.pi/agent"
   initial_auth="$(dirname "$archive")/initial-auth.json"
-  validate_authentication="$(dirname "$archive")/validate-authentication.js"
+  validate_authentication="$(dirname "$archive")/validate-authentication.cjs"
   profile_candidate="${profile}.tmp.$$"
   profile_backup="${profile}.previous.$$"
   dependency_cache="$runtime_parent/package-dependencies"

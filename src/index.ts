@@ -5,11 +5,12 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isAbsolute, join, resolve } from "node:path";
+import { atomicWrite } from "./atomic-write.js";
 import { captureAuthenticationSnapshot, returnRemoteAuthentication } from "./auth.js";
+import { asError, errorMessage, hasErrorCode } from "./errors.js";
 import {
   acquireFileLock,
   fileLockIsHeld,
@@ -36,6 +37,7 @@ import {
   type RepositoryPaths,
 } from "./git.js";
 import { LocalFilesChangedError, runInteractiveMergeReview } from "./merge-review.js";
+import { isPathEqualOrInside, packageRoot } from "./paths.js";
 import { getExecutingPiVersion } from "./pi-version.js";
 import { buildProfile } from "./profile.js";
 import {
@@ -59,6 +61,7 @@ import {
   requestGracefulStop,
   resolveNewRemoteWorkspace,
   settleUnstartedReservation,
+  type RemoteLifecycleState,
   type RemoteWorkspaceObservation,
   type RemoteWorkspaceStatus,
 } from "./remote-workspace.js";
@@ -71,7 +74,6 @@ import {
   readSessionBoundaryHeader,
 } from "./session.js";
 import {
-  isPathEqualOrInside,
   loadTask,
   removeTaskFiles,
   saveTask,
@@ -93,7 +95,6 @@ import {
 } from "./state.js";
 import { showReadOnlyText } from "./text-viewer.js";
 
-const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const controlStatusKey = "remote-handoff-control";
 const gracefulStopTimeoutMs = 10_000;
 
@@ -166,7 +167,7 @@ async function currentProcessOwnsAttachment(task: TaskState): Promise<boolean> {
     const markerContents = await readFile(attachmentMarker(task), "utf8");
     return markerContents.startsWith(`${processInstanceToken}:`) && await attachmentLeaseIsHeld(task);
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+    if (hasErrorCode(error, "ENOENT")) return false;
     throw error;
   }
 }
@@ -201,13 +202,13 @@ async function releaseAttachment(reservation: AttachmentReservation): Promise<vo
     }
     await rm(marker);
   } catch (error) {
-    markerError = error instanceof Error ? error : new Error(String(error));
+    markerError = asError(error);
   }
 
   try {
     await reservation.lease.release();
   } catch (error) {
-    const leaseError = error instanceof Error ? error : new Error(String(error));
+    const leaseError = asError(error);
     if (markerError) {
       throw new AggregateError([markerError, leaseError], "Attachment marker cleanup and lease release failed.");
     }
@@ -268,10 +269,7 @@ function statusLabel(status: RemoteWorkspaceStatus): string {
   }
 }
 
-function activeStatusLabel(
-  state: Extract<RemoteWorkspaceStatus, { kind: "active" }>["state"],
-  host: string,
-): string {
+function activeStatusLabel(state: RemoteLifecycleState, host: string): string {
   switch (state) {
     case "preparing":
       return `Remote Pi is starting on ${host}.`;
@@ -584,7 +582,7 @@ async function attachRemoteTerminal(
             releaseInput,
           });
         } catch (error) {
-          result = error instanceof Error ? error : new Error(String(error));
+          result = asError(error);
         } finally {
           releaseInput();
         }
@@ -616,14 +614,14 @@ async function attachWithControlConversation(
         "info",
       );
     } catch (error) {
-      attachmentError = error instanceof Error ? error : new Error(String(error));
+      attachmentError = asError(error);
     }
 
     let cleanupError: Error | undefined;
     try {
       await releaseAttachment(reservation);
     } catch (error) {
-      cleanupError = error instanceof Error ? error : new Error(String(error));
+      cleanupError = asError(error);
     }
 
     if (attachmentError) controlContext.ui.notify(attachmentError.message, "error");
@@ -649,18 +647,17 @@ async function attachWithControlConversation(
     });
   } catch (error) {
     if (replacementContext) {
-      replacementContext.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      replacementContext.ui.notify(errorMessage(error), "error");
       return;
     }
     let cleanupError: Error | undefined;
     try {
       await releaseAttachment(reservation);
     } catch (cleanupFailure) {
-      cleanupError = cleanupFailure instanceof Error ? cleanupFailure : new Error(String(cleanupFailure));
+      cleanupError = asError(cleanupFailure);
     }
     if (cleanupError) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`${message} Local attachment cleanup also failed: ${cleanupError.message}`, { cause: error });
+      throw new Error(`${errorMessage(error)} Local attachment cleanup also failed: ${cleanupError.message}`, { cause: error });
     }
     throw error;
   }
@@ -670,7 +667,7 @@ async function attachWithControlConversation(
   try {
     await releaseAttachment(reservation);
   } catch (error) {
-    cleanupError = error instanceof Error ? error : new Error(String(error));
+    cleanupError = asError(error);
   }
   if (result?.cancelled) {
     ctx.ui.notify("The control-conversation switch was canceled. The handoff remains active.", "warning");
@@ -1023,7 +1020,7 @@ async function existingFileSha256(path: string): Promise<string | undefined> {
   try {
     return await hashFileSha256(path);
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+    if (hasErrorCode(error, "ENOENT")) return undefined;
     throw error;
   }
 }
@@ -1100,16 +1097,7 @@ async function installReturnedConversation(task: ApplyingTaskState): Promise<voi
   ) {
     throw new Error("The original conversation changed while the handoff owned it.");
   }
-
-  const temporary = join(dirname(task.originalSessionFile), `.${randomUUID()}.pi-remote-handoff-install.tmp`);
-  try {
-    await copyFile(plan.returnedSessionFile, temporary);
-    await chmod(temporary, 0o600);
-    await rename(temporary, task.originalSessionFile);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
+  await atomicWrite(task.originalSessionFile, await readFile(plan.returnedSessionFile));
 }
 
 async function applyFiles(task: ApplyingTaskState): Promise<CleanupPendingTaskState> {
@@ -1160,7 +1148,7 @@ async function finishApplying(
       cleanup = await applyFiles(task);
     } catch (error) {
       localContext.ui.setStatus("remote-handoff", undefined);
-      localContext.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      localContext.ui.notify(errorMessage(error), "error");
       return;
     }
     try {
@@ -1168,7 +1156,7 @@ async function finishApplying(
     } catch (error) {
       localContext.ui.setStatus("remote-handoff", undefined);
       localContext.ui.notify(
-        `The result was applied, but cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+        `The result was applied, but cleanup failed: ${errorMessage(error)}`,
         "warning",
       );
     }
@@ -1301,15 +1289,7 @@ async function materializeOriginalConversation(task: TaskState): Promise<void> {
   if (await hashFileSha256(task.originalSessionSnapshotFile) !== task.originalSessionSha256) {
     throw new Error("The original conversation snapshot changed while the handoff owned it.");
   }
-  const temporary = join(dirname(task.originalSessionFile), `.${randomUUID()}.pi-remote-handoff-original.tmp`);
-  try {
-    await copyFile(task.originalSessionSnapshotFile, temporary);
-    await chmod(temporary, 0o600);
-    await rename(temporary, task.originalSessionFile);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
+  await atomicWrite(task.originalSessionFile, await readFile(task.originalSessionSnapshotFile));
 }
 
 async function discardHandoff(
@@ -1390,7 +1370,7 @@ function registerRemoteHandoffCommand(
         if (args.trim()) throw new Error("Run /remote-handoff without arguments.");
       } catch (error) {
         ctx.ui.setStatus("remote-handoff", undefined);
-        ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+        ctx.ui.notify(errorMessage(error), "error");
         return;
       }
       await handler(ctx);
@@ -1466,7 +1446,7 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
             controlStatusKey,
             `Remote status unavailable on ${task.host}. Run /remote-handoff to inspect.`,
           );
-          ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+          ctx.ui.notify(errorMessage(error), "error");
         }
       } finally {
         polling = false;
@@ -1525,7 +1505,7 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
         }
       }
     } catch (error) {
-      ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      ctx.ui.notify(errorMessage(error), "error");
     }
   });
 
@@ -1547,7 +1527,7 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
       );
       return { action: "handled" };
     } catch (error) {
-      ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      ctx.ui.notify(errorMessage(error), "error");
       return { action: "handled" };
     }
   });
@@ -1569,7 +1549,7 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
         },
       };
     } catch (error) {
-      ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      ctx.ui.notify(errorMessage(error), "error");
       return {
         result: {
           output: "",
@@ -1600,8 +1580,8 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
       ctx.ui.notify("The target conversation belongs to an active Remote Handoff session.", "warning");
       return { cancel: true };
     } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
-      ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      if (hasErrorCode(error, "ENOENT")) return;
+      ctx.ui.notify(errorMessage(error), "error");
       return { cancel: true };
     }
   });
@@ -1616,7 +1596,7 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
       ctx.ui.notify(`${action} is blocked while this conversation belongs to Remote Handoff.`, "warning");
       return { cancel: true };
     } catch (error) {
-      ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      ctx.ui.notify(errorMessage(error), "error");
       return { cancel: true };
     }
   };
@@ -1824,10 +1804,10 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
       try {
         await releaseAttachment(attachment);
       } catch (cleanupFailure) {
-        cleanupError = cleanupFailure instanceof Error ? cleanupFailure : new Error(String(cleanupFailure));
+        cleanupError = asError(cleanupFailure);
       }
       ctx.ui.setStatus("remote-handoff", undefined);
-      ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      ctx.ui.notify(errorMessage(error), "error");
       if (cleanupError) ctx.ui.notify(`Local attachment cleanup failed: ${cleanupError.message}`, "error");
       return;
     }

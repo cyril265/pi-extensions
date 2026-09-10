@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { mkdir, readFile, rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { atomicWrite } from "./atomic-write.js";
 import { withFileLock } from "./file-lock.js";
+import { isRecord } from "./json.js";
 import { scpFrom, shellQuote, ssh } from "./remote.js";
 import type { PendingAuthenticationTaskState } from "./state.js";
 
@@ -22,12 +24,8 @@ export interface ReturnAuthenticationOptions {
   selectConflict: (provider: string) => Promise<AuthenticationConflictChoice | undefined>;
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 function isCredential(value: unknown): value is Credential {
-  if (!isObject(value)) return false;
+  if (!isRecord(value)) return false;
   switch (value.type) {
     case "api_key": {
       if (Object.hasOwn(value, "key") && typeof value.key !== "string") return false;
@@ -55,7 +53,7 @@ function parseAuthentication(contents: string, source: string): Authentication {
   } catch {
     throw new Error(`${source} contains invalid JSON.`);
   }
-  if (!isObject(value)) throw new Error(`${source} must contain a provider-keyed JSON object.`);
+  if (!isRecord(value)) throw new Error(`${source} must contain a provider-keyed JSON object.`);
 
   const authentication = new Map<string, Credential>();
   for (const [provider, credential] of Object.entries(value)) {
@@ -141,17 +139,6 @@ function mergeAuthentication(
 
 function serializeAuthentication(authentication: Authentication): string {
   return `${JSON.stringify(Object.fromEntries(authentication), null, 2)}\n`;
-}
-
-async function atomicWrite(path: string, contents: string | Buffer): Promise<void> {
-  const temporary = join(dirname(path), `.${randomUUID()}.tmp`);
-  try {
-    await writeFile(temporary, contents, { flag: "wx", mode: 0o600 });
-    await rename(temporary, path);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
 }
 
 export async function captureAuthenticationSnapshot(agentDir: string, localDir: string): Promise<string> {

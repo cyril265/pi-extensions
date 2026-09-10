@@ -1,7 +1,10 @@
 import { execFile } from "node:child_process";
 import { chmod, cp, lstat, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hasErrorCode } from "./errors.js";
+import { isRecord } from "./json.js";
+import { isPathEqualOrInside } from "./paths.js";
 
 const portableNames = [
   "APPEND_SYSTEM.md",
@@ -42,10 +45,6 @@ interface ProfileSettings {
   prompts?: string[];
   themes?: string[];
   [key: string]: unknown;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function parseSettings(contents: string): ProfileSettings {
@@ -137,11 +136,6 @@ function resolveLocalSource(source: string, baseDir: string, homeDir: string): s
   return resolve(baseDir, source);
 }
 
-function isInside(path: string, root: string): boolean {
-  const child = relative(root, path);
-  return child === "" || (!child.startsWith(`..${sep}`) && child !== ".." && !isAbsolute(child));
-}
-
 function portableName(index: number, source: string, usedNames: Set<string>): string {
   const name = basename(source).replaceAll(/[^A-Za-z0-9._-]/g, "-") || "resource";
   if (!usedNames.has(name)) {
@@ -175,7 +169,7 @@ async function hasPackageManifest(directory: string): Promise<boolean> {
   try {
     return (await stat(join(directory, "package.json"))).isFile();
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    if (hasErrorCode(error, "ENOENT")) return false;
     throw error;
   }
 }
@@ -185,7 +179,7 @@ async function packageManifestChildren(directory: string): Promise<string[]> {
   try {
     entries = await readdir(directory, { withFileTypes: true });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if (hasErrorCode(error, "ENOENT")) return [];
     throw error;
   }
   const children: string[] = [];
@@ -196,7 +190,7 @@ async function packageManifestChildren(directory: string): Promise<string[]> {
     try {
       childStat = await stat(child);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      if (hasErrorCode(error, "ENOENT")) continue;
       throw error;
     }
     if (!childStat.isDirectory()) continue;
@@ -262,7 +256,7 @@ export async function buildProfile(options: BuildProfileOptions): Promise<string
   try {
     localSecrets.add(await realpath(localAuth));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if (!hasErrorCode(error, "ENOENT")) throw error;
   }
   const packageDirectories: string[] = [];
   const rewrittenPackages: PackageSetting[] = [];
@@ -280,7 +274,7 @@ export async function buildProfile(options: BuildProfileOptions): Promise<string
     try {
       sourceStat = await stat(absolute);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      if (hasErrorCode(error, "ENOENT")) {
         rewrittenPackages.push(entry);
         continue;
       }
@@ -312,19 +306,19 @@ export async function buildProfile(options: BuildProfileOptions): Promise<string
       try {
         sourceStat = await stat(absolute);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        if (hasErrorCode(error, "ENOENT")) {
           rewrittenEntries.push(entry);
           continue;
         }
         throw error;
       }
-      if (isInside(absolute, conventionalRoot)) {
+      if (isPathEqualOrInside(conventionalRoot, absolute)) {
         rewrittenEntries.push(relative(agentDir, absolute));
         continue;
       }
 
       const portable = await portableSource(absolute, sourceStat.isDirectory());
-      if (isInside(agentDir, portable.root)) {
+      if (isPathEqualOrInside(portable.root, agentDir)) {
         throw new Error(`Configured Pi ${resourceType} path contains the agent directory: ${portable.root}`);
       }
 
@@ -354,7 +348,7 @@ export async function buildProfile(options: BuildProfileOptions): Promise<string
     await copyTree(sharedSkills, join(stageHome, ".agents", "skills"));
     settings.skills = [...(settings.skills ?? []), `${options.remoteProfileHome}/.agents/skills`];
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if (!hasErrorCode(error, "ENOENT")) throw error;
   }
 
   const additionalSystemPrompts = (await readdir(agentDir)).filter((name) =>
@@ -365,7 +359,7 @@ export async function buildProfile(options: BuildProfileOptions): Promise<string
     try {
       await lstat(source);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      if (hasErrorCode(error, "ENOENT")) continue;
       throw error;
     }
     await copyTree(source, join(stageAgent, name));

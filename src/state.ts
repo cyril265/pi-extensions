@@ -1,8 +1,11 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { mkdir, readFile, rm } from "node:fs/promises";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { atomicWrite } from "./atomic-write.js";
+import { hasErrorCode } from "./errors.js";
 import { withFileLock } from "./file-lock.js";
 import type { RepositoryPaths } from "./git.js";
+import { isRecord } from "./json.js";
+import { isPathEqualOrInside } from "./paths.js";
 import { validateSshTarget } from "./remotes.js";
 
 interface TaskMetadataBase {
@@ -110,19 +113,6 @@ export type TaskState =
   | ApplyingTaskState
   | ReturningTaskState
   | CleanupPendingTaskState;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function hasErrorCode(error: unknown, code: string): boolean {
-  return error instanceof Error && "code" in error && error.code === code;
-}
-
-export function isPathEqualOrInside(parent: string, candidate: string): boolean {
-  const path = relative(resolve(parent), resolve(candidate));
-  return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
-}
 
 function stringField(value: Record<string, unknown>, name: string): string {
   const field = value[name];
@@ -452,14 +442,7 @@ export async function loadTask(commonGitDir: string): Promise<TaskState | undefi
 export async function saveTask(task: TaskState): Promise<void> {
   const path = taskFile(task.commonGitDir);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = join(dirname(path), `.task-${randomUUID()}.tmp`);
-  try {
-    await writeFile(temporary, `${JSON.stringify(task, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-    await rename(temporary, path);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
+  await atomicWrite(path, `${JSON.stringify(task, null, 2)}\n`);
 }
 
 export async function removeTaskFiles(task: TaskState): Promise<void> {

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isRecord } from "./json.js";
 import { scpTo, shellQuote, ssh, type HerdrInstallation } from "./remote.js";
 
 const requiredRemoteCommands = ["bash", "git", "node", "npm", "tar", "flock", "ssh"];
@@ -24,10 +25,8 @@ export interface RemoteHerdrRuntime {
 }
 
 function record(value: unknown, source: string): Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${source} has an invalid shape.`);
-  }
-  return Object.fromEntries(Object.entries(value));
+  if (!isRecord(value)) throw new Error(`${source} has an invalid shape.`);
+  return value;
 }
 
 function nonEmptyString(value: unknown, source: string): string {

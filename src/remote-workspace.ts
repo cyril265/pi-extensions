@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
-import { basename, dirname, join, posix, resolve } from "node:path";
+import { basename, join, posix } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
 import { ensureRemoteHerdr } from "./herdr-runtime.js";
+import { isRecord } from "./json.js";
+import { packageRoot } from "./paths.js";
 import type {
   ActiveTaskState,
   PreparedTaskState,
@@ -26,10 +27,9 @@ import {
   type TerminalAttachmentLifecycle,
 } from "./remote.js";
 
-const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const remoteProgressPrefix = "PI_REMOTE_HANDOFF_PROGRESS\t";
 
-type RemoteLifecycleState =
+export type RemoteLifecycleState =
   | "preparing"
   | "running"
   | "idle"
@@ -55,7 +55,7 @@ export type RemoteWorkspaceStatus =
   | { kind: "incomplete"; error?: string }
   | { kind: "active"; state: RemoteLifecycleState }
   | { kind: "stopped"; error?: string }
-  | { kind: "prepared"; state: RemoteLifecycleState; error?: string };
+  | { kind: "prepared"; error?: string };
 
 export interface RemoteWorkspaceObservation {
   status: RemoteWorkspaceStatus;
@@ -401,10 +401,6 @@ try {
 }
 `;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 function parseJson(contents: string, source: string): unknown {
   try {
     return JSON.parse(contents);
@@ -535,10 +531,7 @@ function workspaceStatus(
   result: PreparedResultObservation,
 ): RemoteWorkspaceStatus {
   if (result.kind === "prepared") {
-    if (control.state === null) throw new Error("A prepared remote result has no lifecycle state.");
-    return control.error
-      ? { kind: "prepared", state: control.state, error: control.error }
-      : { kind: "prepared", state: control.state };
+    return control.error ? { kind: "prepared", error: control.error } : { kind: "prepared" };
   }
   if (launch.kind === "conflicting") {
     return { kind: "incomplete", error: `Remote workspace belongs to launch ${launch.recordedLaunchId}.` };
@@ -633,7 +626,7 @@ function remoteWorkspacePaths(task: TaskState): RemoteWorkspacePaths {
     runner: `${control}/runner.sh`,
     companion: `${control}/companion.ts`,
     prepareProfile: `${control}/prepare-profile.sh`,
-    validateAuthentication: `${control}/validate-authentication.js`,
+    validateAuthentication: `${control}/validate-authentication.cjs`,
     session: `${control}/session.jsonl`,
     resultBundle: `${control}/result/result.bundle`,
   };
@@ -693,7 +686,7 @@ export async function provisionInitialRemoteWorkspace(
   await scpTo(task.host, options.artifacts.profileArchive, `${paths.control}/profile.tar.gz`);
   await scpTo(task.host, options.artifacts.authenticationBaseline, `${paths.control}/initial-auth.json`);
   await scpTo(task.host, prepareProfile, paths.prepareProfile);
-  await scpTo(task.host, join(packageRoot, "remote", "validate-authentication.js"), paths.validateAuthentication);
+  await scpTo(task.host, join(packageRoot, "remote", "validate-authentication.cjs"), paths.validateAuthentication);
   await ssh(
     task.host,
     [
@@ -917,7 +910,7 @@ async function remotePiEnvironmentProblems(
   const paths = remoteWorkspacePaths(task);
   const validateProfile = remoteCommand(["node", "-e", validateRemoteProfileScript, paths.profile]);
   const validateAuthentication = remoteCommand(["node", paths.validateAuthentication, `${task.remoteAgentDir}/auth.json`]);
-  await scpTo(task.host, join(packageRoot, "remote", "validate-authentication.js"), paths.validateAuthentication);
+  await scpTo(task.host, join(packageRoot, "remote", "validate-authentication.cjs"), paths.validateAuthentication);
   const result = await ssh(
     task.host,
     [

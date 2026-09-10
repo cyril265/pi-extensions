@@ -1,4 +1,5 @@
 import lockfile from "proper-lockfile";
+import { hasErrorCode } from "./errors.js";
 
 export interface FileLockLease {
   check(): void;
@@ -6,7 +7,7 @@ export interface FileLockLease {
 }
 
 export function isFileLockUnavailable(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ELOCKED";
+  return hasErrorCode(error, "ELOCKED");
 }
 
 export function fileLockIsHeld(path: string): Promise<boolean> {

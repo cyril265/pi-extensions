@@ -1,8 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { rename, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { atomicWrite } from "./atomic-write.js";
 
 function unmergedPaths(cwd: string): Promise<string[]> {
   return new Promise((resolvePromise, reject) => {
@@ -23,16 +22,8 @@ function unmergedPaths(cwd: string): Promise<string[]> {
 
 type ReviewOutcome = "complete" | "leave";
 
-async function writeReviewOutcome(controlDirectory: string, outcome: ReviewOutcome): Promise<void> {
-  const marker = join(controlDirectory, "outcome");
-  const temporary = join(controlDirectory, `.outcome-${randomUUID()}.tmp`);
-  try {
-    await writeFile(temporary, `${outcome}\n`, { flag: "wx", mode: 0o600 });
-    await rename(temporary, marker);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
+function writeReviewOutcome(controlDirectory: string, outcome: ReviewOutcome): Promise<void> {
+  return atomicWrite(join(controlDirectory, "outcome"), `${outcome}\n`);
 }
 
 export default function registerMergeReviewCompanion(pi: ExtensionAPI) {

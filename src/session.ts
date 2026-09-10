@@ -3,6 +3,8 @@ import { createReadStream } from "node:fs";
 import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { hasErrorCode } from "./errors.js";
+import { isRecord } from "./json.js";
 
 const currentSessionVersion = 3;
 const sessionIdPattern = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
@@ -39,10 +41,6 @@ type SessionHeader = Record<string, unknown> & {
   timestamp: string;
   cwd: string;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function validSessionId(value: unknown): value is string {
   return typeof value === "string" && sessionIdPattern.test(value);
@@ -166,7 +164,7 @@ export async function exportActiveBranch(
     if (!(await stat(sourcePath)).isFile()) throw new Error("The active Pi conversation path is not a regular file.");
     sourceExisted = true;
   } catch (error) {
-    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+    if (!hasErrorCode(error, "ENOENT")) throw error;
     sourceExisted = false;
   }
   if (!isAbsolute(remoteCwd)) throw new Error("The remote repository path is not absolute.");

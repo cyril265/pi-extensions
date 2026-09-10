@@ -8,6 +8,7 @@ import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { asError, hasErrorCode } from "./errors.js";
 import {
   checkApplyPatch,
   createBinaryPatch,
@@ -264,10 +265,6 @@ async function discardMergeReview(review: MergeReview): Promise<void> {
   }
 }
 
-function hasErrorCode(error: unknown, code: string): boolean {
-  return error instanceof Error && "code" in error && error.code === code;
-}
-
 function executingPiCommand(): string {
   const command = process.argv[1];
   if (!command) throw new Error("Cannot identify the executing Pi command.");
@@ -348,10 +345,7 @@ async function attachReviewTerminal(
       try {
         result = await spawnReviewPi(options);
       } catch (error) {
-        result = {
-          started: false,
-          error: error instanceof Error ? error : new Error(String(error)),
-        };
+        result = { started: false, error: asError(error) };
       } finally {
         tui.start();
         tui.requestRender(true);

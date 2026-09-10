@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { asError, errorMessage } from "./errors.js";
 
 const sshOptions = [
   "-o", "BatchMode=yes",
@@ -168,8 +169,7 @@ export async function localHerdrInstallation(): Promise<HerdrInstallation> {
   try {
     result = await runLocal("herdr", ["--version"]);
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`Local Herdr is required. Install Herdr and make it available on PATH. ${detail}`);
+    throw new Error(`Local Herdr is required. Install Herdr and make it available on PATH. ${errorMessage(error)}`);
   }
   const output = result.stdout.trim();
   const match = output.match(/^herdr ((\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?)$/);
@@ -462,7 +462,7 @@ export async function attachHerdrTerminal(
           }
         }
       } catch (error) {
-        failure = error instanceof Error ? error : new Error(String(error));
+        failure = asError(error);
         activeController.kill();
       }
     });
@@ -528,7 +528,7 @@ export async function attachHerdrTerminal(
       if (inputTaken) lifecycle.releaseInput();
     }
   } catch (error) {
-    operationError = error instanceof Error ? error : new Error(String(error));
+    operationError = asError(error);
   } finally {
     if (stopWatcher) {
       stoppingWatcher = true;

@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { hasErrorCode } from "./errors.js";
+import { isPathEqualOrInside } from "./paths.js";
 
 interface GitOptions {
   cwd: string;
@@ -85,7 +87,7 @@ async function resolveThroughExistingAncestor(path: string): Promise<string> {
     try {
       return resolve(await realpath(existing), ...missing);
     } catch (error) {
-      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+      if (!hasErrorCode(error, "ENOENT")) throw error;
     }
     const parent = dirname(existing);
     if (parent === existing) throw new Error(`Cannot resolve path: ${path}`);
@@ -115,7 +117,7 @@ async function hasGitMarker(cwd: string): Promise<boolean> {
       await lstat(join(directory, ".git"));
       return true;
     } catch (error) {
-      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+      if (!hasErrorCode(error, "ENOENT")) throw error;
     }
     const parent = dirname(directory);
     if (parent === directory) return false;
@@ -143,11 +145,6 @@ export async function assertRepositoryHasCommits(repository: RepositoryPaths): P
   } catch {
     throw new Error("The Git repository has no commits. Create its initial commit before starting a Remote Handoff.");
   }
-}
-
-function isPathEqualOrInside(parent: string, candidate: string): boolean {
-  const path = relative(resolve(parent), resolve(candidate));
-  return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }
 
 export async function initializeRepository(repository: RepositoryPaths, agentDir: string): Promise<void> {
@@ -262,9 +259,7 @@ export async function createSnapshot(
         await lstat(join(repository.repoRoot, path));
         await repositoryGit(repository, ["add", "-f", "--", path], { env });
       } catch (error) {
-        if (error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR")) {
-          continue;
-        }
+        if (hasErrorCode(error, "ENOENT") || hasErrorCode(error, "ENOTDIR")) continue;
         throw error;
       }
     }
@@ -358,9 +353,7 @@ export async function analyzeApplyPaths(
         }
         break;
       } catch (error) {
-        if (!(error instanceof Error) || !("code" in error) || (error.code !== "ENOENT" && error.code !== "ENOTDIR")) {
-          throw error;
-        }
+        if (!hasErrorCode(error, "ENOENT") && !hasErrorCode(error, "ENOTDIR")) throw error;
         candidate = dirname(candidate);
       }
     }

@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
+import { atomicWrite } from "./atomic-write.js";
+import { hasErrorCode } from "./errors.js";
 
 const remotesFileName = "pi-remote-handoff-remotes.json";
 
@@ -48,18 +49,7 @@ async function readRemotes(path: string): Promise<string[]> {
   try {
     return parseRemotes(await readFile(path, "utf8"));
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
-    throw error;
-  }
-}
-
-async function atomicWrite(path: string, remotes: string[]): Promise<void> {
-  const temporary = join(dirname(path), `.${randomUUID()}.tmp`);
-  try {
-    await writeFile(temporary, `${JSON.stringify(remotes, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-    await rename(temporary, path);
-  } catch (error) {
-    await rm(temporary, { force: true });
+    if (hasErrorCode(error, "ENOENT")) return [];
     throw error;
   }
 }
@@ -80,7 +70,7 @@ async function mutateRemotes(agentDir: string, mutation: (remotes: string[]) => 
   });
   try {
     const remotes = mutation(await readRemotes(path));
-    await atomicWrite(path, remotes);
+    await atomicWrite(path, `${JSON.stringify(remotes, null, 2)}\n`);
     return remotes;
   } finally {
     await release();
