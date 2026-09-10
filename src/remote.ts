@@ -17,28 +17,9 @@ export interface HerdrInstallation {
   version: string;
 }
 
-export class RemoteCommandError extends Error {
-  constructor(
-    message: string,
-    readonly command: "ssh" | "scp",
-    readonly exitCode: number | undefined,
-    readonly stdout: string,
-    readonly stderr: string,
-  ) {
-    super(message);
-    this.name = "RemoteCommandError";
-  }
-}
-
 export class SshHostUnreachableError extends Error {
-  readonly exitCode = 255;
-
-  constructor(
-    readonly command: "ssh" | "scp",
-    readonly stdout: string,
-    readonly stderr: string,
-  ) {
-    super(`${command} failed (255): ${stderr || stdout}`.trim());
+  constructor(message: string) {
+    super(message);
     this.name = "SshHostUnreachableError";
   }
 }
@@ -143,16 +124,10 @@ function rejectRemoteFailure(
   const markedExit = marker ? remoteExit(stderr, marker) : undefined;
   const cleanStderr = markedExit?.stderr ?? stderr;
   if (code === 255 && !markedExit) {
-    reject(new SshHostUnreachableError(command, stdout, cleanStderr));
+    reject(new SshHostUnreachableError(failureMessage(command, 255, stdout, cleanStderr)));
     return;
   }
-  reject(new RemoteCommandError(
-    failureMessage(command, markedExit?.status ?? code, stdout, cleanStderr),
-    command,
-    markedExit?.status ?? code,
-    stdout,
-    cleanStderr,
-  ));
+  reject(new Error(failureMessage(command, markedExit?.status ?? code, stdout, cleanStderr)));
 }
 
 function runRemote(
@@ -211,12 +186,8 @@ export async function localHerdrInstallation(): Promise<HerdrInstallation> {
 }
 
 export function ssh(host: string, command: string): Promise<CommandResult> {
-  const remote = markedRemoteCommand(command);
-  return runRemote(
-    "ssh",
-    [...sshOptions, host, remote.command],
-    { marker: remote.marker },
-  );
+  const remote = sshArgs(host, command);
+  return runRemote("ssh", remote.args, { marker: remote.marker });
 }
 
 export function sshStreaming(
@@ -408,7 +379,7 @@ export async function attachHerdrTerminal(
           return;
         }
         if (code === 255 && !remoteExit(watcherError, watcherSsh.marker)) {
-          settle(new SshHostUnreachableError("ssh", watcherOutput, watcherError));
+          settle(new SshHostUnreachableError(failureMessage("ssh", 255, watcherOutput, watcherError)));
           return;
         }
         const detail = watcherError.trim() || (signal ? `ssh received ${signal}` : `ssh exited with status ${code}`);
@@ -424,7 +395,7 @@ export async function attachHerdrTerminal(
       if (lockedKeyMessage(detail)) {
         watcherFailure = new SshKeyLockedError();
       } else if (code === 255 && !remoteExit(watcherError, watcherSsh.marker)) {
-        watcherFailure = new SshHostUnreachableError("ssh", watcherOutput, watcherError);
+        watcherFailure = new SshHostUnreachableError(failureMessage("ssh", 255, watcherOutput, watcherError));
       } else {
         watcherFailure = new Error(`Remote Handoff attachment control ended unexpectedly: ${detail}`);
       }
@@ -539,7 +510,7 @@ export async function attachHerdrTerminal(
             return;
           }
           if (code === 255 && !remoteExit(controllerError, controllerSsh.marker)) {
-            reject(new SshHostUnreachableError("ssh", pendingOutput, controllerError));
+            reject(new SshHostUnreachableError(failureMessage("ssh", 255, pendingOutput, controllerError)));
             return;
           }
           reject(new Error(`Unable to attach to remote Herdr terminal: ${detail}`));
