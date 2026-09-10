@@ -1,6 +1,12 @@
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
+const sshOptions = [
+  "-o", "BatchMode=yes",
+  "-o", "ConnectTimeout=10",
+  "-o", "ServerAliveInterval=5",
+];
+
 export interface CommandResult {
   stdout: string;
   stderr: string;
@@ -197,7 +203,7 @@ export function ssh(host: string, command: string): Promise<CommandResult> {
   const remote = markedRemoteCommand(command);
   return runRemote(
     "ssh",
-    ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, remote.command],
+    [...sshOptions, host, remote.command],
     { marker: remote.marker },
   );
 }
@@ -209,7 +215,7 @@ export function sshStreaming(
 ): Promise<CommandResult> {
   return new Promise((resolvePromise, reject) => {
     const remote = markedRemoteCommand(command);
-    const child = spawn("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, remote.command], {
+    const child = spawn("ssh", [...sshOptions, host, remote.command], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -240,11 +246,11 @@ export function sshStreaming(
 }
 
 export function scpTo(host: string, localPath: string, remotePath: string): Promise<CommandResult> {
-  return runRemote("scp", ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", localPath, `${host}:${remotePath}`]);
+  return runRemote("scp", ["-q", ...sshOptions, localPath, `${host}:${remotePath}`]);
 }
 
 export function scpFrom(host: string, remotePath: string, localPath: string): Promise<CommandResult> {
-  return runRemote("scp", ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", `${host}:${remotePath}`, localPath]);
+  return runRemote("scp", ["-q", ...sshOptions, `${host}:${remotePath}`, localPath]);
 }
 
 interface HerdrTerminalFrame {
@@ -284,7 +290,7 @@ function parseTerminalMessage(line: string): HerdrTerminalFrame | HerdrTerminalC
 function sshArgs(host: string, command: string): { args: string[]; marker: string } {
   const remote = markedRemoteCommand(command);
   return {
-    args: ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, remote.command],
+    args: [...sshOptions, host, remote.command],
     marker: remote.marker,
   };
 }
@@ -299,175 +305,257 @@ export interface AttachHerdrTerminalOptions {
 
 export type TerminalAttachmentEnd = "detached" | "remote-process-exited";
 
+export interface TerminalAttachmentLifecycle {
+  takeInput(): void;
+  releaseInput(): void;
+}
+
 export async function attachHerdrTerminal(
   options: AttachHerdrTerminalOptions,
+  lifecycle: TerminalAttachmentLifecycle,
 ): Promise<TerminalAttachmentEnd> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error("Attaching to remote Pi requires an interactive terminal.");
   }
   const controlFifo = `${options.controlDirectory}/attachment-control`;
-  await ssh(
-    options.host,
-    `rm -f -- ${shellQuote(controlFifo)} && mkfifo -m 600 ${shellQuote(controlFifo)}`,
-  );
-
-  const watcherCommand = [
-    "set -eu",
-    `exec 3<>${shellQuote(controlFifo)}`,
-    "printf 'ready\\n'",
-    "IFS= read -r event <&3",
-    "test \"$event\" = detach",
-    "printf '%s\\n' \"$event\"",
-  ].join("; ");
-  const watcherSsh = sshArgs(options.host, watcherCommand);
-  const watcher = spawn("ssh", watcherSsh.args, {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  watcher.stdout.setEncoding("utf8");
-  watcher.stderr.setEncoding("utf8");
-  let watcherOutput = "";
-  let watcherError = "";
-  watcher.stderr.on("data", (chunk: string) => {
-    watcherError += chunk;
-  });
-
-  await new Promise<void>((resolvePromise, reject) => {
-    const onData = (chunk: string) => {
-      watcherOutput += chunk;
-      if (!watcherOutput.startsWith("ready\n")) return;
-      watcher.stdout.off("data", onData);
-      watcherOutput = watcherOutput.slice("ready\n".length);
-      resolvePromise();
-    };
-    watcher.stdout.on("data", onData);
-    watcher.once("error", reject);
-    watcher.once("close", (code, signal) => {
-      if (lockedKeyMessage(watcherError)) {
-        reject(new Error("Your SSH key is locked"));
-        return;
-      }
-      if (code === 255 && !remoteExit(watcherError, watcherSsh.marker)) {
-        reject(new SshHostUnreachableError("ssh", watcherOutput, watcherError));
-        return;
-      }
-      const detail = watcherError.trim() || (signal ? `ssh received ${signal}` : `ssh exited with status ${code}`);
-      reject(new Error(`Remote Handoff attachment control failed before connecting: ${detail}`));
-    });
-  });
-
-  const cols = process.stdout.columns ?? 80;
-  const rows = process.stdout.rows ?? 24;
-  const controllerCommand = remoteCommand([
-    options.remoteHerdrCommand,
-    "--session",
-    options.herdrSession,
-    "terminal",
-    "session",
-    "control",
-    options.paneId,
-    "--takeover",
-    "--cols",
-    String(cols),
-    "--rows",
-    String(rows),
-  ]);
-  const controllerSsh = sshArgs(options.host, controllerCommand);
-  const controller = spawn("ssh", controllerSsh.args, {
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  controller.stdout.setEncoding("utf8");
-  controller.stderr.setEncoding("utf8");
-  let controllerError = "";
-  let pendingOutput = "";
-  let closedReason: string | null | undefined;
-  let failure: Error | undefined;
-  controller.stderr.on("data", (chunk: string) => {
-    controllerError += chunk;
-  });
-
-  const send = (message: object) => {
-    if (!controller.stdin.destroyed) controller.stdin.write(`${JSON.stringify(message)}\n`);
-  };
-  const onInput = (data: Buffer | string) => {
-    const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    send({ type: "terminal.input", bytes: bytes.toString("base64") });
-  };
-  const onResize = () => {
-    send({
-      type: "terminal.resize",
-      cols: process.stdout.columns ?? 80,
-      rows: process.stdout.rows ?? 24,
-    });
-  };
-  const onControllerOutput = (chunk: string) => {
-    pendingOutput += chunk;
-    const lines = pendingOutput.split("\n");
-    pendingOutput = lines.pop()!;
-    try {
-      for (const line of lines) {
-        if (!line) continue;
-        const message = parseTerminalMessage(line);
-        if (message.type === "terminal.frame") {
-          process.stdout.write(Buffer.from(message.bytes, "base64"));
-        } else {
-          closedReason = message.reason;
-        }
-      }
-    } catch (error) {
-      failure = error instanceof Error ? error : new Error(String(error));
-      controller.kill();
-    }
-  };
-  controller.stdout.on("data", onControllerOutput);
-
-  const onWatcherData = (chunk: string) => {
-    watcherOutput += chunk;
-    if (!watcherOutput.includes("detach\n")) return;
-    send({ type: "terminal.release" });
-  };
-  watcher.stdout.on("data", onWatcherData);
-
-  const stdin = process.stdin;
-  const wasRaw = stdin.isRaw;
-  stdin.setRawMode?.(true);
-  stdin.resume();
-  stdin.on("data", onInput);
-  process.stdout.on("resize", onResize);
+  let stopWatcher: (() => void) | undefined;
+  let watcherClosed: Promise<void> | undefined;
+  let stoppingWatcher = false;
+  let outcome: TerminalAttachmentEnd | undefined;
+  let operationError: Error | undefined;
 
   try {
+    const watcherScript = [
+      "set -eu",
+      `fifo=${shellQuote(controlFifo)}`,
+      "reader=",
+      "cleanup() {",
+      "  status=$?",
+      "  trap - EXIT",
+      "  if test -n \"$reader\"; then kill \"$reader\" 2>/dev/null || :; wait \"$reader\" 2>/dev/null || :; fi",
+      "  rm -f -- \"$fifo\" || status=$?",
+      "  exit \"$status\"",
+      "}",
+      "trap cleanup EXIT",
+      "rm -f -- \"$fifo\"",
+      "mkfifo -m 600 \"$fifo\"",
+      "exec 3<>\"$fifo\"",
+      "printf 'ready\\n'",
+      "(",
+      "  IFS= read -r event <&3",
+      "  test \"$event\" = detach",
+      "  printf '%s\\n' \"$event\"",
+      ") &",
+      "reader=$!",
+      "IFS= read -r command",
+      "test \"$command\" = stop",
+    ].join("\n");
+    const watcherSsh = sshArgs(options.host, remoteCommand(["bash", "-c", watcherScript]));
+    const activeWatcher = spawn("ssh", watcherSsh.args, {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    stopWatcher = () => {
+      if (!activeWatcher.stdin.destroyed) activeWatcher.stdin.end("stop\n");
+    };
+    watcherClosed = new Promise((resolvePromise) => {
+      activeWatcher.once("close", () => resolvePromise());
+    });
+    activeWatcher.stdout.setEncoding("utf8");
+    activeWatcher.stderr.setEncoding("utf8");
+    let watcherOutput = "";
+    let watcherError = "";
+    activeWatcher.stderr.on("data", (chunk: string) => {
+      watcherError += chunk;
+    });
+
     await new Promise<void>((resolvePromise, reject) => {
-      controller.once("error", reject);
-      controller.once("close", (code, signal) => {
-        if (failure) {
-          reject(failure);
+      let settled = false;
+      const settle = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (error) reject(error);
+        else resolvePromise();
+      };
+      const timer = setTimeout(
+        () => settle(new Error("Remote Handoff attachment control did not become ready within 10 seconds.")),
+        10_000,
+      );
+      timer.unref();
+      const onData = (chunk: string) => {
+        watcherOutput += chunk;
+        if (!watcherOutput.startsWith("ready\n")) return;
+        activeWatcher.stdout.off("data", onData);
+        watcherOutput = watcherOutput.slice("ready\n".length);
+        settle();
+      };
+      activeWatcher.stdout.on("data", onData);
+      activeWatcher.once("error", (error) => settle(error));
+      activeWatcher.once("close", (code, signal) => {
+        if (lockedKeyMessage(watcherError)) {
+          settle(new Error("Your SSH key is locked"));
           return;
         }
-        if (code === 0) {
-          resolvePromise();
+        if (code === 255 && !remoteExit(watcherError, watcherSsh.marker)) {
+          settle(new SshHostUnreachableError("ssh", watcherOutput, watcherError));
           return;
         }
-        const detail = controllerError.trim() || (signal ? `ssh received ${signal}` : `ssh exited with status ${code}`);
-        if (lockedKeyMessage(detail)) {
-          reject(new Error("Your SSH key is locked"));
-          return;
-        }
-        if (code === 255 && !remoteExit(controllerError, controllerSsh.marker)) {
-          reject(new SshHostUnreachableError("ssh", pendingOutput, controllerError));
-          return;
-        }
-        reject(new Error(`Unable to attach to remote Herdr terminal: ${detail}`));
+        const detail = watcherError.trim() || (signal ? `ssh received ${signal}` : `ssh exited with status ${code}`);
+        settle(new Error(`Remote Handoff attachment control failed before connecting: ${detail}`));
       });
     });
-    if (closedReason === "detached") return "detached";
-    if (closedReason?.includes("exited")) return "remote-process-exited";
-    if (closedReason) throw new Error(`Remote Herdr terminal closed: ${closedReason}`);
-    throw new Error("Remote Herdr terminal closed without a reason.");
+
+    let controller: ReturnType<typeof spawn> | undefined;
+    let watcherFailure: Error | undefined;
+    activeWatcher.once("close", (code, signal) => {
+      if (stoppingWatcher) return;
+      const detail = watcherError.trim() || (signal ? `ssh received ${signal}` : `ssh exited with status ${code}`);
+      if (lockedKeyMessage(detail)) {
+        watcherFailure = new Error("Your SSH key is locked");
+      } else if (code === 255 && !remoteExit(watcherError, watcherSsh.marker)) {
+        watcherFailure = new SshHostUnreachableError("ssh", watcherOutput, watcherError);
+      } else {
+        watcherFailure = new Error(`Remote Handoff attachment control ended unexpectedly: ${detail}`);
+      }
+      controller?.kill();
+    });
+
+    const cols = process.stdout.columns ?? 80;
+    const rows = process.stdout.rows ?? 24;
+    const controllerCommand = remoteCommand([
+      options.remoteHerdrCommand,
+      "--session",
+      options.herdrSession,
+      "terminal",
+      "session",
+      "control",
+      options.paneId,
+      "--takeover",
+      "--cols",
+      String(cols),
+      "--rows",
+      String(rows),
+    ]);
+    const controllerSsh = sshArgs(options.host, controllerCommand);
+    const activeController = spawn("ssh", controllerSsh.args, {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    controller = activeController;
+    activeController.stdout.setEncoding("utf8");
+    activeController.stderr.setEncoding("utf8");
+    let controllerError = "";
+    let pendingOutput = "";
+    let closedReason: string | null | undefined;
+    let failure: Error | undefined;
+    activeController.stderr.on("data", (chunk: string) => {
+      controllerError += chunk;
+    });
+
+    const send = (message: object) => {
+      if (!activeController.stdin.destroyed) activeController.stdin.write(`${JSON.stringify(message)}\n`);
+    };
+    const onInput = (data: Buffer | string) => {
+      const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      send({ type: "terminal.input", bytes: bytes.toString("base64") });
+    };
+    const onResize = () => {
+      send({
+        type: "terminal.resize",
+        cols: process.stdout.columns ?? 80,
+        rows: process.stdout.rows ?? 24,
+      });
+    };
+    activeController.stdout.on("data", (chunk: string) => {
+      pendingOutput += chunk;
+      const lines = pendingOutput.split("\n");
+      pendingOutput = lines.pop()!;
+      try {
+        for (const line of lines) {
+          if (!line) continue;
+          const message = parseTerminalMessage(line);
+          if (message.type === "terminal.frame") {
+            process.stdout.write(Buffer.from(message.bytes, "base64"));
+          } else {
+            closedReason = message.reason;
+          }
+        }
+      } catch (error) {
+        failure = error instanceof Error ? error : new Error(String(error));
+        activeController.kill();
+      }
+    });
+    let detachSent = false;
+    const sendDetach = () => {
+      if (detachSent || !watcherOutput.includes("detach\n")) return;
+      detachSent = true;
+      send({ type: "terminal.release" });
+    };
+    activeWatcher.stdout.on("data", (chunk: string) => {
+      watcherOutput += chunk;
+      sendDetach();
+    });
+    sendDetach();
+
+    const stdin = process.stdin;
+    const wasRaw = stdin.isRaw;
+    let inputTaken = false;
+    try {
+      lifecycle.takeInput();
+      inputTaken = true;
+      stdin.setRawMode?.(true);
+      stdin.resume();
+      stdin.on("data", onInput);
+      process.stdout.on("resize", onResize);
+
+      await new Promise<void>((resolvePromise, reject) => {
+        activeController.once("error", reject);
+        activeController.once("close", (code, signal) => {
+          if (watcherFailure) {
+            reject(watcherFailure);
+            return;
+          }
+          if (failure) {
+            reject(failure);
+            return;
+          }
+          if (code === 0) {
+            resolvePromise();
+            return;
+          }
+          const detail = controllerError.trim() || (signal ? `ssh received ${signal}` : `ssh exited with status ${code}`);
+          if (lockedKeyMessage(detail)) {
+            reject(new Error("Your SSH key is locked"));
+            return;
+          }
+          if (code === 255 && !remoteExit(controllerError, controllerSsh.marker)) {
+            reject(new SshHostUnreachableError("ssh", pendingOutput, controllerError));
+            return;
+          }
+          reject(new Error(`Unable to attach to remote Herdr terminal: ${detail}`));
+        });
+      });
+      if (closedReason === "detached") outcome = "detached";
+      else if (closedReason?.includes("exited")) outcome = "remote-process-exited";
+      else if (closedReason) throw new Error(`Remote Herdr terminal closed: ${closedReason}`);
+      else throw new Error("Remote Herdr terminal closed without a reason.");
+    } finally {
+      stdin.off("data", onInput);
+      process.stdout.off("resize", onResize);
+      stdin.setRawMode?.(wasRaw ?? false);
+      activeController.stdin.destroy();
+      if (inputTaken) lifecycle.releaseInput();
+    }
+  } catch (error) {
+    operationError = error instanceof Error ? error : new Error(String(error));
   } finally {
-    stdin.off("data", onInput);
-    process.stdout.off("resize", onResize);
-    stdin.setRawMode?.(wasRaw ?? false);
-    watcher.kill();
-    controller.stdin.destroy();
-    await ssh(options.host, `rm -f -- ${shellQuote(controlFifo)}`);
+    if (stopWatcher) {
+      stoppingWatcher = true;
+      stopWatcher();
+      await watcherClosed;
+    }
   }
+
+  if (operationError) throw operationError;
+  if (!outcome) throw new Error("Remote attachment ended without an outcome.");
+  return outcome;
 }

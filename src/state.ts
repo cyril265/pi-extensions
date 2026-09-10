@@ -2,14 +2,13 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { withFileLock } from "./file-lock.js";
+import type { RepositoryPaths } from "./git.js";
 import { validateSshTarget } from "./remotes.js";
 
-interface TaskMetadata {
+interface TaskMetadataBase {
   version: 7;
   id: string;
   host: string;
-  repoRoot: string;
-  commonGitDir: string;
   localDir: string;
   remoteDir: string;
   remoteAgentDir: string;
@@ -28,6 +27,8 @@ interface TaskMetadata {
   originalSessionSha256: string;
   controlSessionFile: string;
 }
+
+type TaskMetadata = TaskMetadataBase & RepositoryPaths;
 
 export interface PendingAuthentication {
   kind: "pending";
@@ -49,53 +50,53 @@ export interface ApplyPlan {
   returnedSessionSha256: string;
 }
 
-export interface ReservedTaskState extends TaskMetadata {
+export type ReservedTaskState = TaskMetadata & {
   phase: "reserved";
   reservationKind: "start" | "continue";
   launchId: string;
   authentication: PendingAuthentication;
-}
+};
 
-export interface ActiveTaskState extends TaskMetadata {
+export type ActiveTaskState = TaskMetadata & {
   phase: "active";
   launchId: string;
   authentication: PendingAuthentication;
-}
+};
 
-export interface StoppedTaskState extends TaskMetadata {
+export type StoppedTaskState = TaskMetadata & {
   phase: "stopped";
   launchId: string;
   authentication: PendingAuthentication;
-}
+};
 
-export interface PreparedTaskState extends TaskMetadata {
+export type PreparedTaskState = TaskMetadata & {
   phase: "prepared";
   launchId: string;
   authentication: PendingAuthentication;
-}
+};
 
-export interface ApplyingTaskState extends TaskMetadata {
+export type ApplyingTaskState = TaskMetadata & {
   phase: "applying";
   authentication: ReturnedAuthentication;
   applyPlan: ApplyPlan;
-}
+};
 
-export interface DiscardReturningTaskState extends TaskMetadata {
+export type DiscardReturningTaskState = TaskMetadata & {
   phase: "returning";
   returnReason: "discard";
   authentication: ReturnedAuthentication;
-}
+};
 
-export interface AbandonReturningTaskState extends TaskMetadata {
+export type AbandonReturningTaskState = TaskMetadata & {
   phase: "returning";
   returnReason: "abandon";
   authentication: PendingAuthentication | ReturnedAuthentication;
-}
+};
 
-export interface CleanupPendingTaskState extends TaskMetadata {
+export type CleanupPendingTaskState = TaskMetadata & {
   phase: "cleanup-pending";
   authentication: ReturnedAuthentication;
-}
+};
 
 export type ReturningTaskState = DiscardReturningTaskState | AbandonReturningTaskState;
 export type RemoteOwnedTaskState = ActiveTaskState | StoppedTaskState | PreparedTaskState;
@@ -123,7 +124,7 @@ export function isPathEqualOrInside(parent: string, candidate: string): boolean 
   return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }
 
-function stringField(value: Record<string, unknown>, name: keyof TaskMetadata): string {
+function stringField(value: Record<string, unknown>, name: string): string {
   const field = value[name];
   if (typeof field !== "string" || field.length === 0) {
     throw new Error(`Version 7 Remote Handoff metadata has an invalid ${name} field.`);
@@ -131,7 +132,7 @@ function stringField(value: Record<string, unknown>, name: keyof TaskMetadata): 
   return field;
 }
 
-function absolutePathField(value: Record<string, unknown>, name: keyof TaskMetadata): string {
+function absolutePathField(value: Record<string, unknown>, name: string): string {
   const field = stringField(value, name);
   if (!isAbsolute(field)) {
     throw new Error(`Version 7 Remote Handoff metadata has a non-absolute ${name} field.`);
@@ -240,7 +241,23 @@ function parseMetadata(value: Record<string, unknown>): TaskMetadata {
   const commonGitDir = absolutePathField(value, "commonGitDir");
   const localDir = absolutePathField(value, "localDir");
   if (localDir !== taskDirectory(commonGitDir)) {
-    throw new Error("Version 7 Remote Handoff local directory must be under the Git common directory.");
+    throw new Error("Version 7 Remote Handoff local directory does not match its repository namespace.");
+  }
+  const repositoryKind = value.repositoryKind === undefined ? "git" : value.repositoryKind;
+  let repository: RepositoryPaths;
+  if (repositoryKind === "git") {
+    repository = { repositoryKind, repoRoot, commonGitDir };
+  } else if (repositoryKind === "directory") {
+    const privateGitDir = absolutePathField(value, "privateGitDir");
+    if (privateGitDir !== join(commonGitDir, "repository.git")) {
+      throw new Error("Version 7 Remote Handoff private Git directory does not match its repository namespace.");
+    }
+    if (isPathEqualOrInside(repoRoot, privateGitDir)) {
+      throw new Error("Version 7 Remote Handoff private Git directory must be outside the handed-off directory.");
+    }
+    repository = { repositoryKind, repoRoot, commonGitDir, privateGitDir };
+  } else {
+    throw new Error("Version 7 Remote Handoff metadata has an invalid repositoryKind field.");
   }
 
   const remoteDir = absolutePathField(value, "remoteDir");
@@ -298,8 +315,7 @@ function parseMetadata(value: Record<string, unknown>): TaskMetadata {
     version: 7,
     id,
     host,
-    repoRoot,
-    commonGitDir,
+    ...repository,
     localDir,
     remoteDir,
     remoteAgentDir,
@@ -401,7 +417,7 @@ function parseTask(value: unknown): TaskState {
 }
 
 export function taskDirectory(commonGitDir: string): string {
-  if (!isAbsolute(commonGitDir)) throw new Error("The Git common directory must be absolute.");
+  if (!isAbsolute(commonGitDir)) throw new Error("The repository namespace must be absolute.");
   return resolve(commonGitDir, "pi-remote-handoff");
 }
 

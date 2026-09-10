@@ -2,6 +2,14 @@
 set -uo pipefail
 umask 077
 
+if [[ ${PI_REMOTE_HANDOFF_LOGIN_SHELL-} != 1 ]]; then
+  if [[ ${SHELL-} != /* || ! -x $SHELL ]]; then
+    printf 'Remote login shell is missing or invalid: %s\n' "${SHELL-}" >&2
+    exit 2
+  fi
+  exec env PI_REMOTE_HANDOFF_LOGIN_SHELL=1 "$SHELL" -lc 'exec "$@"' remote-handoff-login "$0" "$@"
+fi
+
 control=$1
 repository=$2
 session=$3

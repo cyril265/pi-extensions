@@ -11,6 +11,12 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { captureAuthenticationSnapshot, returnRemoteAuthentication } from "./auth.js";
 import {
+  acquireFileLock,
+  fileLockIsHeld,
+  isFileLockUnavailable,
+  type FileLockLease,
+} from "./file-lock.js";
+import {
   applyDelta,
   checkApplyPatch,
   createBinaryPatch,
@@ -20,9 +26,14 @@ import {
   diff,
   analyzeApplyPaths,
   importResult,
+  initializeRepository,
   rejectUnsupportedRepository,
+  removeRepositoryData,
+  resolveDirectoryRepository,
+  resolveDirectoryRepositoryForLookup,
   resolveRepository,
   resolveTree,
+  type RepositoryPaths,
 } from "./git.js";
 import { runInteractiveMergeReview } from "./merge-review.js";
 import { getExecutingPiVersion } from "./pi-version.js";
@@ -85,9 +96,18 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const controlStatusKey = "remote-handoff-control";
 const gracefulStopTimeoutMs = 10_000;
 
-interface RepositoryContext {
-  repoRoot: string;
-  commonGitDir: string;
+declare global {
+  var __piRemoteHandoffProcessInstanceToken: string | undefined;
+}
+
+const processInstanceToken = globalThis.__piRemoteHandoffProcessInstanceToken ??= randomUUID();
+
+type RepositoryContext = RepositoryPaths;
+
+interface AttachmentReservation {
+  task: ActiveTaskState;
+  lease: FileLockLease;
+  markerContents: string;
 }
 
 type ReachableTask = {
@@ -134,13 +154,67 @@ function attachmentMarker(task: TaskState): string {
   return join(task.localDir, "attachment-active");
 }
 
+function attachmentLeasePath(commonGitDir: string): string {
+  return `${taskDirectory(commonGitDir)}.attachment`;
+}
+
+async function attachmentLeaseIsHeld(task: TaskState): Promise<boolean> {
+  return fileLockIsHeld(attachmentLeasePath(task.commonGitDir));
+}
+
 async function currentProcessOwnsAttachment(task: TaskState): Promise<boolean> {
   try {
-    return await readFile(attachmentMarker(task), "utf8") === `${process.pid}\n`;
+    const markerContents = await readFile(attachmentMarker(task), "utf8");
+    return markerContents.startsWith(`${processInstanceToken}:`) && await attachmentLeaseIsHeld(task);
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
     throw error;
   }
+}
+
+async function reserveAttachment(task: ActiveTaskState): Promise<AttachmentReservation> {
+  let lease: FileLockLease;
+  try {
+    lease = await acquireFileLock(attachmentLeasePath(task.commonGitDir), false);
+  } catch (error) {
+    if (isFileLockUnavailable(error)) {
+      throw new Error("The remote terminal is already attached by another local controller.");
+    }
+    throw error;
+  }
+
+  const markerContents = `${processInstanceToken}:${randomUUID()}\n`;
+  try {
+    await writeFile(attachmentMarker(task), markerContents, { mode: 0o600 });
+  } catch (error) {
+    await lease.release();
+    throw error;
+  }
+  return { task, lease, markerContents };
+}
+
+async function releaseAttachment(reservation: AttachmentReservation): Promise<void> {
+  let markerError: Error | undefined;
+  try {
+    const marker = attachmentMarker(reservation.task);
+    if (await readFile(marker, "utf8") !== reservation.markerContents) {
+      throw new Error("Attachment marker ownership changed while its lease was held.");
+    }
+    await rm(marker);
+  } catch (error) {
+    markerError = error instanceof Error ? error : new Error(String(error));
+  }
+
+  try {
+    await reservation.lease.release();
+  } catch (error) {
+    const leaseError = error instanceof Error ? error : new Error(String(error));
+    if (markerError) {
+      throw new AggregateError([markerError, leaseError], "Attachment marker cleanup and lease release failed.");
+    }
+    throw leaseError;
+  }
+  if (markerError) throw markerError;
 }
 
 function conversationIsBlocked(task: TaskState): boolean {
@@ -154,10 +228,29 @@ function remoteOwnsConversation(task: TaskState): boolean {
     || task.phase === "prepared";
 }
 
+async function resolveRepositoryContext(cwd: string): Promise<RepositoryContext> {
+  const agentDir = resolve(getAgentDir());
+  const directory = await resolveDirectoryRepositoryForLookup(cwd, agentDir);
+  const directoryTask = await loadTask(directory.commonGitDir);
+  if (directoryTask) {
+    const validatedDirectory = await resolveDirectoryRepository(cwd, agentDir);
+    if (
+      directoryTask.repositoryKind !== "directory"
+      || directoryTask.repoRoot !== validatedDirectory.repoRoot
+      || directoryTask.commonGitDir !== validatedDirectory.commonGitDir
+      || directoryTask.privateGitDir !== validatedDirectory.privateGitDir
+    ) {
+      throw new Error("The non-Git Remote Handoff namespace belongs to a different directory.");
+    }
+    return directoryTask;
+  }
+  return resolveRepository(cwd, agentDir);
+}
+
 async function taskForContext(ctx: ExtensionContext): Promise<TaskState | undefined> {
-  let repository: Awaited<ReturnType<typeof resolveRepository>>;
+  let repository: RepositoryContext;
   try {
-    repository = await resolveRepository(ctx.cwd);
+    repository = await resolveRepositoryContext(ctx.cwd);
   } catch {
     return undefined;
   }
@@ -334,8 +427,7 @@ async function withProgress<T>(
 }
 
 async function removeLocalHandoff(task: TaskState): Promise<void> {
-  await deleteRef(task.repoRoot, task.handoffRef);
-  await deleteRef(task.repoRoot, task.resultRef);
+  await removeRepositoryData(task, [task.handoffRef, task.resultRef]);
   await removeTaskFiles(task);
 }
 
@@ -345,35 +437,45 @@ async function removePrelaunchReservation(task: ReservedTaskState): Promise<bool
   return true;
 }
 
-function menuForTask(task: TaskState): { title: string; items: MenuItem[] } {
+function menuForTask(task: TaskState, attachmentInUse: boolean): { title: string; items: MenuItem[] } {
+  const restrictWhileAttached = (
+    menu: { title: string; items: MenuItem[] },
+  ): { title: string; items: MenuItem[] } => {
+    if (!attachmentInUse) return menu;
+    return {
+      title: `${menu.title}. Another local controller is attached`,
+      items: [{ action: "status", label: "status: show current handoff state" }],
+    };
+  };
+
   switch (task.phase) {
     case "reserved":
-      return {
+      return restrictWhileAttached({
         title: `Remote startup is being reconciled on ${task.host}`,
         items: [
           { action: "status", label: "status: check startup" },
         ],
-      };
+      });
     case "active":
-      return {
+      return restrictWhileAttached({
         title: `Remote Pi is active on ${task.host}`,
         items: [
           { action: "attach", label: "attach: open the remote Pi terminal" },
           { action: "status", label: "status: show remote run status" },
           { action: "stop", label: "stop and prepare result" },
         ],
-      };
+      });
     case "stopped":
-      return {
+      return restrictWhileAttached({
         title: `Remote Pi stopped on ${task.host} without a result`,
         items: [
           { action: "continue", label: "continue remotely" },
           { action: "status", label: "status: show workspace status" },
           { action: "discard", label: "discard: end this handoff" },
         ],
-      };
+      });
     case "prepared":
-      return {
+      return restrictWhileAttached({
         title: `Result prepared on ${task.host}`,
         items: [
           { action: "view-diff", label: "view diff" },
@@ -381,35 +483,39 @@ function menuForTask(task: TaskState): { title: string; items: MenuItem[] } {
           { action: "apply", label: "apply" },
           { action: "discard", label: "discard: end this handoff" },
         ],
-      };
+      });
     case "cleanup-pending":
-      return {
+      return restrictWhileAttached({
         title: `Result applied, cleanup pending on ${task.host}`,
         items: [
           { action: "retry-cleanup", label: "retry cleanup" },
           { action: "status", label: "status: show cleanup state" },
         ],
-      };
+      });
     case "applying":
-      return {
+      return restrictWhileAttached({
         title: "Returning the prepared result locally",
         items: [{ action: "apply", label: "continue apply recovery" }],
-      };
+      });
     case "returning":
-      return {
+      return restrictWhileAttached({
         title: "Returning the original conversation locally",
         items: [{ action: "discard", label: "continue ownership return" }],
-      };
+      });
   }
 }
 
-function unreachableMenu(task: TaskState): { title: string; items: MenuItem[] } {
+function unreachableMenu(task: TaskState, attachmentInUse = false): { title: string; items: MenuItem[] } {
   return {
-    title: `Cannot reach ${task.host}`,
-    items: [
-      { action: "retry-connection", label: "retry connection" },
-      { action: "abandon", label: "abandon unreachable handoff" },
-    ],
+    title: attachmentInUse
+      ? `Cannot reach ${task.host}. Another local controller is attached`
+      : `Cannot reach ${task.host}`,
+    items: attachmentInUse
+      ? [{ action: "retry-connection", label: "retry connection" }]
+      : [
+        { action: "retry-connection", label: "retry connection" },
+        { action: "abandon", label: "abandon unreachable handoff" },
+      ],
   };
 }
 
@@ -466,18 +572,29 @@ async function attachRemoteTerminal(
 ): Promise<TerminalAttachmentEnd> {
   const outcome = await ctx.ui.custom<TerminalAttachmentEnd | Error>(
     (tui, _theme, _keybindings, done) => {
-      tui.stop();
-      process.stdout.write("\u001b[2J\u001b[H");
+      let inputTaken = false;
+      const releaseInput = () => {
+        if (!inputTaken) return;
+        inputTaken = false;
+        tui.start();
+        tui.requestRender(true);
+      };
 
       void (async () => {
         let result: TerminalAttachmentEnd | Error;
         try {
-          result = await attachRemoteRun(task);
+          result = await attachRemoteRun(task, {
+            takeInput: () => {
+              tui.stop();
+              process.stdout.write("\u001b[2J\u001b[H");
+              inputTaken = true;
+            },
+            releaseInput,
+          });
         } catch (error) {
           result = error instanceof Error ? error : new Error(String(error));
         } finally {
-          tui.start();
-          tui.requestRender(true);
+          releaseInput();
         }
         done(result);
       })();
@@ -492,15 +609,13 @@ async function attachRemoteTerminal(
 
 async function attachWithControlConversation(
   ctx: ExtensionCommandContext,
-  task: ActiveTaskState,
+  reservation: AttachmentReservation,
   watch: (task: ActiveTaskState, ctx: ExtensionContext) => void,
 ): Promise<void> {
-  const marker = attachmentMarker(task);
+  const { task } = reservation;
   const attach = async (controlContext: ExtensionCommandContext) => {
+    let attachmentError: Error | undefined;
     try {
-      if (!(await currentProcessOwnsAttachment(task))) {
-        await writeFile(marker, `${process.pid}\n`, { mode: 0o600 });
-      }
       const terminalEnd = await attachRemoteTerminal(controlContext, task);
       controlContext.ui.notify(
         terminalEnd === "detached"
@@ -509,9 +624,19 @@ async function attachWithControlConversation(
         "info",
       );
     } catch (error) {
-      controlContext.ui.notify(error instanceof Error ? error.message : String(error), "error");
-    } finally {
-      await rm(marker, { force: true });
+      attachmentError = error instanceof Error ? error : new Error(String(error));
+    }
+
+    let cleanupError: Error | undefined;
+    try {
+      await releaseAttachment(reservation);
+    } catch (error) {
+      cleanupError = error instanceof Error ? error : new Error(String(error));
+    }
+
+    if (attachmentError) controlContext.ui.notify(attachmentError.message, "error");
+    if (cleanupError) {
+      controlContext.ui.notify(`Local attachment cleanup failed: ${cleanupError.message}`, "error");
     }
   };
 
@@ -521,32 +646,55 @@ async function attachWithControlConversation(
     return;
   }
 
-  await writeFile(marker, `${process.pid}\n`, { mode: 0o600 });
-  let enteredControl = false;
-  let result: { cancelled: boolean };
+  let replacementContext: ExtensionCommandContext | undefined;
+  let result: { cancelled: boolean } | undefined;
   try {
     result = await ctx.switchSession(task.controlSessionFile, {
       withSession: async (controlContext) => {
-        enteredControl = true;
+        replacementContext = controlContext;
         await attach(controlContext);
       },
     });
-  } finally {
-    if (!enteredControl) await rm(marker, { force: true });
+  } catch (error) {
+    if (replacementContext) {
+      replacementContext.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      return;
+    }
+    let cleanupError: Error | undefined;
+    try {
+      await releaseAttachment(reservation);
+    } catch (cleanupFailure) {
+      cleanupError = cleanupFailure instanceof Error ? cleanupFailure : new Error(String(cleanupFailure));
+    }
+    if (cleanupError) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`${message} Local attachment cleanup also failed: ${cleanupError.message}`, { cause: error });
+    }
+    throw error;
   }
-  if (result.cancelled) {
-    throw new Error("The control-conversation switch was canceled. The handoff remains active.");
+  if (replacementContext) return;
+
+  let cleanupError: Error | undefined;
+  try {
+    await releaseAttachment(reservation);
+  } catch (error) {
+    cleanupError = error instanceof Error ? error : new Error(String(error));
   }
+  if (result?.cancelled) {
+    ctx.ui.notify("The control-conversation switch was canceled. The handoff remains active.", "warning");
+  }
+  if (cleanupError) ctx.ui.notify(`Local attachment cleanup failed: ${cleanupError.message}`, "error");
 }
 
 async function startHandoff(
   ctx: ExtensionCommandContext,
   repository: RepositoryContext,
-  watch: (task: ActiveTaskState, ctx: ExtensionContext) => void,
-): Promise<void> {
+): Promise<ActiveTaskState | undefined> {
   ctx.ui.setStatus("remote-handoff", "Waiting for local Pi to become idle...");
   await ctx.waitForIdle();
-  await rejectUnsupportedRepository(repository.repoRoot);
+  if (repository.repositoryKind === "git") {
+    await rejectUnsupportedRepository(repository);
+  }
 
   const localAgentDir = resolve(getAgentDir());
   const host = await selectHost(ctx, localAgentDir);
@@ -588,6 +736,10 @@ async function startHandoff(
   let task: ReservedTaskState | undefined;
 
   try {
+    await initializeRepository(repository);
+    if (repository.repositoryKind === "directory") {
+      await rejectUnsupportedRepository(repository);
+    }
     await rm(localDir, { recursive: true, force: true });
     await mkdir(localDir, { recursive: true, mode: 0o700 });
     ctx.ui.setStatus("remote-handoff", "Exporting active conversation...");
@@ -599,13 +751,13 @@ async function startHandoff(
     );
     ctx.ui.setStatus("remote-handoff", "Snapshotting local files...");
     const handoffCommit = await createSnapshot(
-      repository.repoRoot,
+      repository,
       localDir,
       handoffRef,
       "pi-remote-handoff handoff",
     );
     await rm(handoffBundle, { force: true });
-    await createBundle(repository.repoRoot, handoffBundle, handoffRef);
+    await createBundle(repository, handoffBundle, handoffRef);
     ctx.ui.setStatus("remote-handoff", "Building portable Pi profile...");
     const profileArchive = await buildProfile({
       agentDir: localAgentDir,
@@ -617,16 +769,27 @@ async function startHandoff(
     const authenticationBaseline = await captureAuthenticationSnapshot(localAgentDir, localDir);
     await createControlSession(controlSessionFile, repository.repoRoot);
     const piVersion = await getExecutingPiVersion();
+    const repositoryMetadata = repository.repositoryKind === "directory"
+      ? {
+          repositoryKind: repository.repositoryKind,
+          repoRoot: repository.repoRoot,
+          commonGitDir: repository.commonGitDir,
+          privateGitDir: repository.privateGitDir,
+        }
+      : {
+          repositoryKind: repository.repositoryKind,
+          repoRoot: repository.repoRoot,
+          commonGitDir: repository.commonGitDir,
+        };
 
     const reservedTask: ReservedTaskState = {
       version: 7,
+      ...repositoryMetadata,
       phase: "reserved",
       reservationKind: "start",
       launchId,
       id,
       host,
-      repoRoot: repository.repoRoot,
-      commonGitDir: repository.commonGitDir,
       localDir,
       remoteDir: workspace.remoteDir,
       remoteAgentDir: workspace.remoteAgentDir,
@@ -676,8 +839,7 @@ async function startHandoff(
     ctx.ui.setStatus("remote-handoff", undefined);
 
     if (current.phase === "active") {
-      await attachWithControlConversation(ctx, current, watch);
-      return;
+      return current;
     }
     if (reconciled.observation) {
       ctx.ui.notify(
@@ -687,7 +849,7 @@ async function startHandoff(
     }
   } catch (error) {
     if (!task) {
-      await deleteRef(repository.repoRoot, handoffRef);
+      await removeRepositoryData(repository, [handoffRef]);
       await rm(localDir, { recursive: true, force: true });
       throw error;
     }
@@ -715,8 +877,7 @@ async function startHandoff(
 async function continueRemote(
   ctx: ExtensionCommandContext,
   task: StoppedTaskState | PreparedTaskState,
-  watch: (task: ActiveTaskState, ctx: ExtensionContext) => void,
-): Promise<void> {
+): Promise<ActiveTaskState | undefined> {
   if (task.phase === "prepared") {
     const confirmed = await ctx.ui.confirm(
       "Continue remote work?",
@@ -763,8 +924,7 @@ async function continueRemote(
   const reconciled = await reconcileRemoteTask(reserved);
   ctx.ui.setStatus("remote-handoff", undefined);
   if (reconciled.task.phase === "active") {
-    await attachWithControlConversation(ctx, reconciled.task, watch);
-    return;
+    return reconciled.task;
   }
   if (reconciled.observation) {
     ctx.ui.notify(statusLabel(reconciled.observation.status), "warning");
@@ -809,7 +969,7 @@ async function importPreparedResult(task: PreparedTaskState): Promise<{
   remoteSession: string;
 }> {
   const downloaded = await downloadPreparedResult(task);
-  const resultCommit = await importResult(task.repoRoot, downloaded.bundle, task.resultRef);
+  const resultCommit = await importResult(task, downloaded.bundle, task.resultRef);
   return { resultCommit, remoteSession: downloaded.session };
 }
 
@@ -817,16 +977,16 @@ async function currentTree(task: TaskState, includedPaths: readonly string[] = [
   const ref = `refs/pi-remote-handoff/${task.id}/current-${randomUUID()}`;
   try {
     const commit = await createSnapshot(
-      task.repoRoot,
+      task,
       task.localDir,
       ref,
       "pi-remote-handoff current files",
       task.handoffCommit,
       includedPaths,
     );
-    return resolveTree(task.repoRoot, commit);
+    return resolveTree(task, commit);
   } finally {
-    await deleteRef(task.repoRoot, ref);
+    await deleteRef(task, ref);
   }
 }
 
@@ -881,20 +1041,20 @@ async function buildApplyPlan(
   resultCommit: string,
   remoteSession: string,
 ): Promise<ApplyPlan | undefined> {
-  const paths = await analyzeApplyPaths(task.repoRoot, task.handoffCommit, resultCommit);
+  const paths = await analyzeApplyPaths(task, task.handoffCommit, resultCommit);
   const beforeTree = await currentTree(task, paths.includedPaths);
-  const handoffTree = await resolveTree(task.repoRoot, task.handoffCommit);
+  const handoffTree = await resolveTree(task, task.handoffCommit);
 
   if (beforeTree === handoffTree && paths.collisionPaths.length === 0) {
-    const patch = await createBinaryPatch(task.repoRoot, task.handoffCommit, resultCommit);
-    await checkApplyPatch(task.repoRoot, patch);
+    const patch = await createBinaryPatch(task, task.handoffCommit, resultCommit);
+    await checkApplyPatch(task, patch);
     const patchFile = await writePatch(task, patch);
     try {
       const returned = await prepareLocalReturnedSession(task, remoteSession);
       return {
         resultCommit,
         beforeTree,
-        afterTree: await resolveTree(task.repoRoot, resultCommit),
+        afterTree: await resolveTree(task, resultCommit),
         includedPaths: paths.includedPaths,
         patchFile: patchFile.path,
         patchSha256: patchFile.sha256,
@@ -909,7 +1069,7 @@ async function buildApplyPlan(
 
   const review = await runInteractiveMergeReview({
     ctx,
-    repoRoot: task.repoRoot,
+    repository: task,
     localDir: task.localDir,
     handoffCommit: task.handoffCommit,
     resultCommit,
@@ -967,8 +1127,8 @@ async function applyFiles(task: ApplyingTaskState): Promise<CleanupPendingTaskSt
   const before = await currentTree(task, plan.includedPaths);
   if (before === plan.beforeTree) {
     const patch = await readFile(plan.patchFile, "utf8");
-    await checkApplyPatch(task.repoRoot, patch);
-    await applyDelta(task.repoRoot, patch);
+    await checkApplyPatch(task, patch);
+    await applyDelta(task, patch);
   } else if (before !== plan.afterTree) {
     throw new Error("Local files changed after final apply confirmation. The prepared apply cannot continue safely.");
   }
@@ -1235,11 +1395,12 @@ function registerRemoteHandoffCommand(
         ) return;
         if (ctx.mode !== "tui") throw new Error("Remote Handoff requires Pi's interactive TUI.");
         if (args.trim()) throw new Error("Run /remote-handoff without arguments.");
-        await handler(ctx);
       } catch (error) {
         ctx.ui.setStatus("remote-handoff", undefined);
         ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+        return;
       }
+      await handler(ctx);
     },
   });
 }
@@ -1247,6 +1408,7 @@ function registerRemoteHandoffCommand(
 export default function registerRemoteHandoff(pi: ExtensionAPI) {
   if (process.env.PI_REMOTE_HANDOFF_CONTROL || process.env.PI_REMOTE_HANDOFF_REVIEW === "1") return;
 
+  let sessionClosed = false;
   const watchers = new Map<string, NodeJS.Timeout>();
   const stopWatcher = (commonGitDir: string) => {
     const timer = watchers.get(commonGitDir);
@@ -1259,17 +1421,20 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
     let polling = false;
     let unreachable = false;
     const poll = async () => {
-      if (polling) return;
+      if (sessionClosed || polling) return;
       polling = true;
       try {
         await tryWithRepositoryOperationLock(task.commonGitDir, async () => {
+          if (sessionClosed) return;
           const current = await loadTask(task.commonGitDir);
+          if (sessionClosed) return;
           if (!current || current.phase !== "active") {
             if (current) setControlStatus(ctx, current);
             stopWatcher(task.commonGitDir);
             return;
           }
           const reconciled = await reconcileRemoteTask(current);
+          if (sessionClosed) return;
           const connectionWasUnreachable = unreachable;
           unreachable = false;
           if (reconciled.observation) {
@@ -1292,6 +1457,7 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
           }
         });
       } catch (error) {
+        if (sessionClosed) return;
         if (isSshHostUnreachableError(error)) {
           ctx.ui.setStatus(
             controlStatusKey,
@@ -1322,7 +1488,9 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
   const watchAfterAttachment = (task: ActiveTaskState, ctx: ExtensionContext) => {
     stopWatcher(task.commonGitDir);
     const wait = async () => {
+      if (sessionClosed) return;
       if (await currentProcessOwnsAttachment(task)) return;
+      if (sessionClosed) return;
       stopWatcher(task.commonGitDir);
       watch(task, ctx);
     };
@@ -1433,7 +1601,7 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
       }
       if (event.reason !== "resume" || !event.targetSessionFile) return;
       const header = await readSessionBoundaryHeader(resolve(event.targetSessionFile));
-      const repository = await resolveRepository(header.cwd);
+      const repository = await resolveRepositoryContext(header.cwd);
       const task = await loadTask(repository.commonGitDir);
       if (!task || !remoteOwnsConversation(task) || header.id !== task.originalSessionId) return;
       ctx.ui.notify("The target conversation belongs to an active Remote Handoff session.", "warning");
@@ -1463,19 +1631,18 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
   pi.on("session_before_compact", async (_event, ctx) => blockOriginalConversationMutation(ctx, "Compaction"));
 
   pi.on("session_shutdown", (_event, ctx) => {
+    sessionClosed = true;
     for (const timer of watchers.values()) clearInterval(timer);
     watchers.clear();
     ctx.ui.setStatus(controlStatusKey, undefined);
   });
 
   registerRemoteHandoffCommand(pi, async (ctx) => {
-    const resolved = await resolveRepository(ctx.cwd);
-    const repository: RepositoryContext = {
-      repoRoot: resolved.repoRoot,
-      commonGitDir: resolved.commonGitDir,
-    };
+    const repository = await resolveRepositoryContext(ctx.cwd);
+    let attachment: AttachmentReservation | undefined;
 
-    await withRepositoryOperationLock(repository.commonGitDir, async () => {
+    ctx.ui.setStatus("remote-handoff", "Waiting for Remote Handoff access...");
+    const lifecycle = withRepositoryOperationLock(repository.commonGitDir, async () => {
       while (true) {
         ctx.ui.setStatus("remote-handoff", "Checking Remote Handoff...");
         let task = await loadTask(repository.commonGitDir);
@@ -1486,13 +1653,24 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
             { action: "remotes", label: "remotes: manage saved SSH hosts" },
           ]);
           if (action === "start") {
-            await startHandoff(ctx, repository, watch);
+            const active = await startHandoff(ctx, repository);
+            if (active) attachment = await reserveAttachment(active);
             return;
           }
           if (action === "remotes") {
             await manageRemotes(ctx);
             continue;
           }
+          return;
+        }
+
+        const attachmentInUse = await attachmentLeaseIsHeld(task);
+        if (attachmentInUse && (task.phase === "applying" || task.phase === "returning")) {
+          ctx.ui.setStatus("remote-handoff", undefined);
+          ctx.ui.notify(
+            "Another local controller is finishing a remote terminal attachment. Retry after it detaches.",
+            "warning",
+          );
           return;
         }
 
@@ -1521,7 +1699,8 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
         const observed = await observeTask(task);
         if (observed.kind === "unreachable") {
           ctx.ui.setStatus("remote-handoff", undefined);
-          const action = await selectMenu(ctx, unreachableMenu(task).title, unreachableMenu(task).items);
+          const menu = unreachableMenu(task, attachmentInUse);
+          const action = await selectMenu(ctx, menu.title, menu.items);
           if (action === "retry-connection") continue;
           if (action === "abandon") {
             await abandonHandoff(ctx, task);
@@ -1579,7 +1758,7 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
           }
         }
 
-        const menu = menuForTask(task);
+        const menu = menuForTask(task, attachmentInUse);
         ctx.ui.setStatus("remote-handoff", undefined);
         const action = await selectMenu(ctx, menu.title, menu.items);
         if (!action) return;
@@ -1587,8 +1766,8 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
         switch (action) {
           case "attach":
             if (task.phase !== "active") throw new Error("Remote Pi is not active.");
-            await attachWithControlConversation(ctx, task, watch);
-            continue;
+            attachment = await reserveAttachment(task);
+            return;
           case "status":
             if (task.phase === "cleanup-pending") {
               ctx.ui.notify("The result is applied locally. Remote cleanup is still pending.", "warning");
@@ -1606,13 +1785,16 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
             if (task.phase !== "stopped" && task.phase !== "prepared") {
               throw new Error("This handoff cannot continue remotely in its current phase.");
             }
-            await continueRemote(ctx, task, watch);
+            {
+              const active = await continueRemote(ctx, task);
+              if (active) attachment = await reserveAttachment(active);
+            }
             return;
           case "view-diff": {
             if (task.phase !== "prepared") throw new Error("No prepared result is available.");
             ctx.ui.setStatus("remote-handoff", "Downloading prepared result...");
             const imported = await importPreparedResult(task);
-            const output = (await diff(task.repoRoot, task.handoffCommit, imported.resultCommit)).trim();
+            const output = (await diff(task, task.handoffCommit, imported.resultCommit)).trim();
             ctx.ui.setStatus("remote-handoff", undefined);
             await showReadOnlyText(ctx, "Remote changes", output || "No changes.");
             continue;
@@ -1639,5 +1821,21 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
         }
       }
     });
+    try {
+      await lifecycle;
+    } catch (error) {
+      if (!attachment) throw error;
+      let cleanupError: Error | undefined;
+      try {
+        await releaseAttachment(attachment);
+      } catch (cleanupFailure) {
+        cleanupError = cleanupFailure instanceof Error ? cleanupFailure : new Error(String(cleanupFailure));
+      }
+      ctx.ui.setStatus("remote-handoff", undefined);
+      ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      if (cleanupError) ctx.ui.notify(`Local attachment cleanup failed: ${cleanupError.message}`, "error");
+      return;
+    }
+    if (attachment) await attachWithControlConversation(ctx, attachment, watch);
   });
 }

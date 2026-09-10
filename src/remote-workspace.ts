@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { basename, dirname, join, posix, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { ensureRemoteHerdr } from "./herdr-runtime.js";
 import type {
   ActiveTaskState,
   PreparedTaskState,
@@ -22,10 +23,10 @@ import {
   type AttachHerdrTerminalOptions,
   type HerdrInstallation,
   type TerminalAttachmentEnd,
+  type TerminalAttachmentLifecycle,
 } from "./remote.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const requiredRemoteCommands = ["bash", "git", "node", "npm", "tar", "flock", "ssh"];
 const remoteProgressPrefix = "PI_REMOTE_HANDOFF_PROGRESS\t";
 
 type RemoteLifecycleState =
@@ -145,11 +146,6 @@ interface HerdrServerStatus {
   running: boolean;
   version: string | null;
   compatible: boolean | null;
-}
-
-interface RemotePreflight {
-  home: string;
-  remoteHerdrCommand: string;
 }
 
 const observeScript = String.raw`
@@ -702,62 +698,18 @@ function remoteWorkspacePaths(task: TaskState): RemoteWorkspacePaths {
   };
 }
 
-async function preflightRemoteHost(host: string, expectedHerdrOutput: string): Promise<RemotePreflight> {
-  const result = await ssh(
-    host,
-    [
-      "set -eu",
-      `for command in ${requiredRemoteCommands.join(" ")}; do`,
-      "  if ! command -v \"$command\" >/dev/null; then",
-      "    printf 'Missing remote command: %s\\n' \"$command\" >&2",
-      "    exit 1",
-      "  fi",
-      "done",
-      "path_herdr=$(command -v herdr || true)",
-      "direct_herdr=$HOME/.local/bin/herdr",
-      "herdr_command=",
-      "for candidate in \"$path_herdr\" \"$direct_herdr\"; do",
-      "  case \"$candidate\" in /*) ;; *) continue ;; esac",
-      `  if test -x "$candidate" && test "$("$candidate" --version 2>/dev/null)" = ${shellQuote(expectedHerdrOutput)}; then`,
-      "    herdr_command=$candidate",
-      "    break",
-      "  fi",
-      "done",
-      "if test -z \"$herdr_command\"; then",
-      `  printf '%s\\n' ${shellQuote(`Remote Herdr does not match ${expectedHerdrOutput}. Install the exact build on PATH or at $HOME/.local/bin/herdr.`)} >&2`,
-      "  exit 1",
-      "fi",
-      "node_version=$(node -p 'process.versions.node')",
-      "node -e 'const [major, minor] = process.versions.node.split(\".\").map(Number); if (major < 22 || (major === 22 && minor < 19)) process.exit(1)' || {",
-      "  printf 'Remote Node.js 22.19.0 or newer is required; found %s.\\n' \"$node_version\" >&2",
-      "  exit 1",
-      "}",
-      "printf '%s\\n%s\\n' \"$HOME\" \"$herdr_command\"",
-    ].join("\n"),
-  );
-  const [home, remoteHerdrCommand, ...extra] = result.stdout.trimEnd().split("\n");
-  if (
-    extra.length !== 0
-    || !home?.startsWith("/")
-    || !remoteHerdrCommand?.startsWith("/")
-  ) {
-    throw new Error(`The remote host returned invalid preflight metadata: ${JSON.stringify(result.stdout)}`);
-  }
-  return { home, remoteHerdrCommand };
-}
-
 export async function resolveNewRemoteWorkspace(
   options: ResolveNewRemoteWorkspaceOptions,
 ): Promise<NewRemoteWorkspace> {
-  const preflight = await preflightRemoteHost(options.host, options.herdr.output);
-  const remoteDir = `${preflight.home}/.pi-remote-handoff/workspaces/${workspaceName(options.repoRoot, options.commonGitDir)}`;
+  const remoteHerdr = await ensureRemoteHerdr(options.host, options.herdr);
+  const remoteDir = `${remoteHerdr.home}/.pi-remote-handoff/workspaces/${workspaceName(options.repoRoot, options.commonGitDir)}`;
   const profileHome = `${remoteDir}/profile/home`;
   return {
     host: options.host,
     remoteDir,
     remoteAgentDir: `${profileHome}/.pi/agent`,
-    remotePiCommand: `${preflight.home}/.pi-remote-handoff/runtime/node_modules/.bin/pi`,
-    remoteHerdrCommand: preflight.remoteHerdrCommand,
+    remotePiCommand: `${remoteHerdr.home}/.pi-remote-handoff/runtime/node_modules/.bin/pi`,
+    remoteHerdrCommand: remoteHerdr.command,
     profileHome,
     conversationCwd: `${remoteDir}/repository`,
   };
@@ -773,12 +725,13 @@ export async function refreshStoppedRemoteWorkspace(
   task: StoppedTaskState,
   herdr: HerdrInstallation,
 ): Promise<StoppedTaskState> {
-  const preflight = await preflightRemoteHost(task.host, herdr.output);
+  const remoteHerdr = await ensureRemoteHerdr(task.host, herdr);
+  if (task.herdrVersion !== herdr.version) await deleteRecordedHerdrSession(task);
   return {
     ...task,
-    remoteHerdrCommand: preflight.remoteHerdrCommand,
+    remoteHerdrCommand: remoteHerdr.command,
     herdrVersion: herdr.version,
-    remotePiCommand: `${preflight.home}/.pi-remote-handoff/runtime/node_modules/.bin/pi`,
+    remotePiCommand: `${remoteHerdr.home}/.pi-remote-handoff/runtime/node_modules/.bin/pi`,
   };
 }
 
@@ -929,8 +882,11 @@ async function attachmentMetadata(task: ActiveTaskState): Promise<AttachHerdrTer
   };
 }
 
-export async function attachRemoteRun(task: ActiveTaskState): Promise<TerminalAttachmentEnd> {
-  return attachHerdrTerminal(await attachmentMetadata(task));
+export async function attachRemoteRun(
+  task: ActiveTaskState,
+  lifecycle: TerminalAttachmentLifecycle,
+): Promise<TerminalAttachmentEnd> {
+  return attachHerdrTerminal(await attachmentMetadata(task), lifecycle);
 }
 
 export async function requestGracefulStop(

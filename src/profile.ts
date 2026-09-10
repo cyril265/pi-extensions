@@ -20,6 +20,7 @@ const portableNames = [
   "pi-sub-core-settings.json",
   "pi-vcc-config.json",
   "presets.json",
+  "simple-subagent.json",
   "web-providers.json",
   "prompts",
   "themes",

@@ -1,6 +1,6 @@
 # Remote Handoff
 
-Remote Handoff hands one Pi conversation and its repository state to Pi on a trusted SSH host, then brings the conversation and file changes back.
+Remote Handoff hands one Pi conversation and its project files to Pi on a trusted SSH host, then brings the conversation and file changes back.
 
 It is a personal interactive tool. Remote machine setup is manual, and remote Pi runs with the full permissions of the SSH user.
 
@@ -20,7 +20,6 @@ The remote host needs:
 
 - Bash
 - Git
-- Herdr matching the exact local build
 - Node.js 22.19.0 or newer
 - npm and required registry access
 - `tar`
@@ -29,9 +28,13 @@ The remote host needs:
 
 Both `ssh` and `scp` must reach the host in batch mode. Saved targets use `host` or `user@host` syntax.
 
-The project must be a Git repository with at least one commit. Git submodules, Git LFS, and Git content filters are unsupported.
+The project can be a Git repository with at least one commit or an ordinary directory. For an ordinary directory, Remote Handoff treats Pi's current working directory as the project root and keeps private Git metadata under the Pi agent directory. It does not create `.git` in the project.
 
-Install browser tools and other task-specific programs on the remote host before starting a handoff. Remote Handoff installs neither machine dependencies nor Herdr.
+`.gitignore` rules apply in both modes. Git submodules, embedded repositories, Git LFS, and Git content filters are unsupported.
+
+Install browser tools and other task-specific programs on the remote host before starting a handoff. Remote Handoff does not install machine dependencies.
+
+When the remote host has no matching Herdr release, Remote Handoff downloads the local version for the remote platform from Herdr's release manifest, verifies its SHA-256 checksum, and installs it under `~/.pi-remote-handoff/herdr`. It does not replace the host's normal Herdr installation.
 
 ## Install
 
@@ -39,7 +42,7 @@ Install browser tools and other task-specific programs on the remote host before
 pi install /absolute/path/to/pi-remote-handoff
 ```
 
-Open a persisted Pi conversation in the repository, then run:
+Open a persisted Pi conversation in the project, then run:
 
 ```text
 /remote-handoff
@@ -80,22 +83,24 @@ After local apply succeeds but remote cleanup fails:
 
 After an SSH connection failure, Remote Handoff offers `retry connection` and `abandon unreachable handoff` while the handed-off conversation still belongs to the handoff.
 
-One Git repository can have one handoff. Remote Handoff keys this rule by the repository's Git common directory, so linked worktrees cannot start separate handoffs. Different repositories can have handoffs at the same time.
+One project can have one handoff. Remote Handoff keys Git projects by their Git common directory, so linked worktrees cannot start separate handoffs. It keys ordinary directories by their canonical absolute path. Different projects can have handoffs at the same time.
 
 ## Start a handoff
 
-`start` checks the repository, local Herdr, and the selected remote host. It uses the only saved host automatically, asks when several hosts exist, or prompts for a host when none exist.
+`start` checks the project, local Herdr, and the selected remote host. It uses the only saved host automatically, asks when several hosts exist, or prompts for a host when none exist.
 
 Remote Handoff transfers:
 
 - the selected branch of the active Pi conversation
-- tracked files
-- non-ignored untracked files
-- Git history reachable from the handoff snapshot
+- tracked files and non-ignored untracked files from a Git project
+- non-ignored files from an ordinary directory
+- Git history reachable from the handoff snapshot, including private snapshot history for an ordinary directory
 - a private portable Pi profile
 - Pi credentials in a separate `0600` file
 
 Ignored files stay local.
+
+An ordinary-directory handoff continues using its private Git metadata if someone runs `git init` in the project while the handoff is active. Remote Handoff never reads or removes that new `.git` directory.
 
 Remote Handoff prepares the local snapshot, then reserves the conversation while it uploads the handoff, prepares the remote private profile, and starts Pi. It records a unique launch ID before asking the remote host to start Pi. The remote launch records the same ID under `flock` before starting Herdr or Pi.
 
@@ -169,7 +174,7 @@ The exact local Pi version is installed under `~/.pi-remote-handoff/runtime` on 
 
 ## Security and transfer scope
 
-Conversation JSONL, reachable Git history, profile files, and credentials can contain secrets. Review the repository and Pi profile before handing them to a host.
+Conversation JSONL, project files, reachable Git history, profile files, and credentials can contain secrets. Review the project and Pi profile before handing them to a host.
 
 Remote Pi is not sandboxed. Use only SSH hosts and Pi configuration that you trust.
 

@@ -1,17 +1,21 @@
 # Remote Handoff
 
-Remote Handoff moves one developer's active Pi conversation and repository state to a trusted SSH host, then returns the resulting conversation and file changes.
+Remote Handoff moves one developer's active Pi conversation and project files to a trusted SSH host, then returns the resulting conversation and file changes.
 
 ## Language
 
 **Handoff**:
 The full lifecycle that starts when work moves to remote Pi and ends when the developer applies or discards its result.
 
+**Project**:
+The local Git worktree or ordinary directory whose files accompany the conversation. An ordinary project's root is Pi's working directory when the handoff starts.
+_Avoid_: Repository, when the project is not a Git repository
+
 **Workspace**:
 The private local and remote resources owned by one handoff.
 
 **Conversation ownership**:
-The handed-off conversation can continue in only one Pi process at a time. Other conversations and local repository work remain available while remote Pi owns it.
+The handed-off conversation can continue in only one Pi process at a time. Other conversations and local project work remain available while remote Pi owns it.
 
 **Conversation reservation**:
 A temporary local lock while Remote Handoff determines whether remote Pi started. The reservation prevents local continuation until remote ownership is confirmed or startup ends without launching.
@@ -42,4 +46,4 @@ _Avoid_: Discard
 The period when the developer inspects a prepared result, asks remote Pi questions, and requests further changes before applying it locally.
 
 **Merge review**:
-Review required when local work and a prepared result both changed the repository. Pi inspects their combined result, resolves clear conflicts, and asks the developer when intent is ambiguous. The developer confirms the combined diff before it changes local files.
+Review required when local work and a prepared result both changed the project. Pi inspects their combined result, resolves clear conflicts, and asks the developer when intent is ambiguous. The developer confirms the combined diff before it changes local files.

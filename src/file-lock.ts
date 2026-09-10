@@ -1,15 +1,27 @@
 import lockfile from "proper-lockfile";
 
-export async function withFileLock<T>(
-  path: string,
-  wait: boolean,
-  operation: (checkLock: () => void) => Promise<T>,
-): Promise<T> {
+export interface FileLockLease {
+  check(): void;
+  release(): Promise<void>;
+}
+
+export function isFileLockUnavailable(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ELOCKED";
+}
+
+export function fileLockIsHeld(path: string): Promise<boolean> {
+  return lockfile.check(path, {
+    realpath: false,
+    stale: 30_000,
+  });
+}
+
+export async function acquireFileLock(path: string, wait: boolean): Promise<FileLockLease> {
   let compromised: Error | undefined;
-  const checkLock = () => {
+  const check = () => {
     if (compromised) throw compromised;
   };
-  const release = await lockfile.lock(path, {
+  const releaseLock = await lockfile.lock(path, {
     realpath: false,
     stale: 30_000,
     retries: wait ? {
@@ -23,17 +35,32 @@ export async function withFileLock<T>(
       compromised = error;
     },
   });
+
+  return {
+    check,
+    release: async () => {
+      try {
+        await releaseLock();
+      } catch (error) {
+        if (!compromised) throw error;
+      }
+      check();
+    },
+  };
+}
+
+export async function withFileLock<T>(
+  path: string,
+  wait: boolean,
+  operation: (checkLock: () => void) => Promise<T>,
+): Promise<T> {
+  const lease = await acquireFileLock(path, wait);
   try {
-    checkLock();
-    const result = await operation(checkLock);
-    checkLock();
+    lease.check();
+    const result = await operation(lease.check);
+    lease.check();
     return result;
   } finally {
-    try {
-      await release();
-    } catch (error) {
-      if (!compromised) throw error;
-    }
-    checkLock();
+    await lease.release();
   }
 }

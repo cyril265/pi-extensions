@@ -12,8 +12,11 @@ import {
   checkApplyPatch,
   createBinaryPatch,
   createSnapshot,
+  deleteRef,
   git,
+  repositoryGit,
   resolveTree,
+  type RepositoryPaths,
 } from "./git.js";
 import {
   createReviewSession,
@@ -49,7 +52,7 @@ type InteractiveMergeReviewResult =
 
 interface InteractiveMergeReviewOptions {
   ctx: ExtensionCommandContext;
-  repoRoot: string;
+  repository: RepositoryPaths;
   localDir: string;
   handoffCommit: string;
   resultCommit: string;
@@ -59,7 +62,7 @@ interface InteractiveMergeReviewOptions {
 }
 
 interface MergeReview {
-  repoRoot: string;
+  repository: RepositoryPaths;
   localDir: string;
   worktreePath: string;
   temporaryRoot: string;
@@ -88,10 +91,6 @@ interface ReviewPiExit {
   error?: Error;
 }
 
-async function deleteReviewRef(repoRoot: string, ref: string): Promise<void> {
-  await git(["update-ref", "-d", ref], { cwd: repoRoot });
-}
-
 async function listUnmergedPaths(worktreePath: string): Promise<string[]> {
   const output = await git(["diff", "--name-only", "--diff-filter=U", "-z"], {
     cwd: worktreePath,
@@ -101,21 +100,19 @@ async function listUnmergedPaths(worktreePath: string): Promise<string[]> {
 }
 
 async function removeReviewWorktree(review: MergeReview): Promise<void> {
-  await git(["worktree", "remove", "--force", review.worktreePath], { cwd: review.repoRoot });
+  await repositoryGit(review.repository, ["worktree", "remove", "--force", review.worktreePath]);
   await rm(review.temporaryRoot, { recursive: true, force: true });
 }
 
 async function startMergeReview(options: {
-  repoRoot: string;
+  repository: RepositoryPaths;
   localDir: string;
   handoffCommit: string;
   resultCommit: string;
   includedPaths: readonly string[];
 }): Promise<MergeReview> {
   try {
-    await git(["merge-base", "--is-ancestor", options.handoffCommit, options.resultCommit], {
-      cwd: options.repoRoot,
-    });
+    await repositoryGit(options.repository, ["merge-base", "--is-ancestor", options.handoffCommit, options.resultCommit]);
   } catch {
     throw new Error("Prepared result does not descend from the Remote Handoff.");
   }
@@ -124,7 +121,7 @@ async function startMergeReview(options: {
   const localSnapshotRef = `refs/pi-remote-handoff/review-${reviewId}/local`;
   const mergedRef = `refs/pi-remote-handoff/review-${reviewId}/merged`;
   const localSnapshotCommit = await createSnapshot(
-    options.repoRoot,
+    options.repository,
     options.localDir,
     localSnapshotRef,
     "pi-remote-handoff merge review local snapshot",
@@ -135,12 +132,12 @@ async function startMergeReview(options: {
   try {
     temporaryRoot = await mkdtemp(join(tmpdir(), "pi-remote-handoff-review-"));
   } catch (error) {
-    await deleteReviewRef(options.repoRoot, localSnapshotRef);
+    await deleteRef(options.repository, localSnapshotRef);
     throw error;
   }
   const worktreePath = join(temporaryRoot, "worktree");
   const review: MergeReview = {
-    repoRoot: options.repoRoot,
+    repository: options.repository,
     localDir: options.localDir,
     worktreePath,
     temporaryRoot,
@@ -153,7 +150,7 @@ async function startMergeReview(options: {
   };
 
   try {
-    await git(["worktree", "add", "--detach", worktreePath, localSnapshotCommit], { cwd: options.repoRoot });
+    await repositoryGit(options.repository, ["worktree", "add", "--detach", worktreePath, localSnapshotCommit]);
     try {
       await git(["merge", "--no-commit", "--no-ff", options.resultCommit], {
         cwd: worktreePath,
@@ -170,7 +167,7 @@ async function startMergeReview(options: {
     } catch {
       await rm(temporaryRoot, { recursive: true, force: true });
     }
-    await deleteReviewRef(options.repoRoot, localSnapshotRef);
+    await deleteRef(options.repository, localSnapshotRef);
     throw error;
   }
 }
@@ -192,14 +189,14 @@ async function commitMergedReview(review: MergeReview): Promise<string> {
       input: "pi-remote-handoff merged result\n",
     },
   );
-  await git(["update-ref", review.mergedRef, commit], { cwd: review.repoRoot });
+  await git(["update-ref", review.mergedRef, commit], { cwd: review.worktreePath });
   return commit;
 }
 
-async function treesEqual(repoRoot: string, left: string, right: string): Promise<boolean> {
+async function treesEqual(repository: RepositoryPaths, left: string, right: string): Promise<boolean> {
   const [leftTree, rightTree] = await Promise.all([
-    resolveTree(repoRoot, left),
-    resolveTree(repoRoot, right),
+    resolveTree(repository, left),
+    resolveTree(repository, right),
   ]);
   return leftTree === rightTree;
 }
@@ -207,10 +204,10 @@ async function treesEqual(repoRoot: string, left: string, right: string): Promis
 async function finalizeMergeReview(review: MergeReview): Promise<FinalizedMergeReview> {
   const mergedCommit = await commitMergedReview(review);
   const [beforeTree, afterTree] = await Promise.all([
-    resolveTree(review.repoRoot, review.localSnapshotCommit),
-    resolveTree(review.repoRoot, mergedCommit),
+    resolveTree(review.repository, review.localSnapshotCommit),
+    resolveTree(review.repository, mergedCommit),
   ]);
-  const patch = await createBinaryPatch(review.repoRoot, review.localSnapshotCommit, mergedCommit);
+  const patch = await createBinaryPatch(review.repository, review.localSnapshotCommit, mergedCommit);
   const patchFile = join(review.localDir, `apply-${randomUUID()}.patch`);
   await writeFile(patchFile, patch, { flag: "wx", mode: 0o600 });
   const patchSha256 = createHash("sha256").update(patch).digest("hex");
@@ -220,20 +217,20 @@ async function finalizeMergeReview(review: MergeReview): Promise<FinalizedMergeR
     const checkRef = `refs/pi-remote-handoff/review-check-${randomUUID()}`;
     try {
       const current = await createSnapshot(
-        review.repoRoot,
+        review.repository,
         review.localDir,
         checkRef,
         "pi-remote-handoff merge review file check",
         review.handoffCommit,
         review.includedPaths,
       );
-      if (!(await treesEqual(review.repoRoot, current, review.localSnapshotCommit))) {
+      if (!(await treesEqual(review.repository, current, review.localSnapshotCommit))) {
         throw new Error("Local files changed during merge review. Start the review again with the current files.");
       }
     } finally {
-      await deleteReviewRef(review.repoRoot, checkRef);
+      await deleteRef(review.repository, checkRef);
     }
-    await checkApplyPatch(review.repoRoot, patch);
+    await checkApplyPatch(review.repository, patch);
     return {
       resultCommit: review.resultCommit,
       beforeTree,
@@ -245,8 +242,8 @@ async function finalizeMergeReview(review: MergeReview): Promise<FinalizedMergeR
     };
   } catch (error) {
     await rm(patchFile, { force: true });
-    await deleteReviewRef(review.repoRoot, review.localSnapshotRef);
-    await deleteReviewRef(review.repoRoot, review.mergedRef);
+    await deleteRef(review.repository, review.localSnapshotRef);
+    await deleteRef(review.repository, review.mergedRef);
     throw error;
   }
 }
@@ -255,8 +252,8 @@ async function discardMergeReview(review: MergeReview): Promise<void> {
   try {
     await removeReviewWorktree(review);
   } finally {
-    await deleteReviewRef(review.repoRoot, review.localSnapshotRef);
-    await deleteReviewRef(review.repoRoot, review.mergedRef);
+    await deleteRef(review.repository, review.localSnapshotRef);
+    await deleteRef(review.repository, review.mergedRef);
   }
 }
 
@@ -375,15 +372,15 @@ async function readReviewOutcome(controlDirectory: string): Promise<ReviewOutcom
   }
 }
 
-async function deleteFinalizedRefs(repoRoot: string, review: FinalizedMergeReview): Promise<void> {
+async function deleteFinalizedRefs(repository: RepositoryPaths, review: FinalizedMergeReview): Promise<void> {
   await Promise.all([
-    deleteReviewRef(repoRoot, review.localSnapshotRef),
-    deleteReviewRef(repoRoot, review.mergedRef),
+    deleteRef(repository, review.localSnapshotRef),
+    deleteRef(repository, review.mergedRef),
   ]);
 }
 
 async function cleanupIncompleteReview(options: {
-  repoRoot: string;
+  repository: RepositoryPaths;
   review: MergeReview | undefined;
   finalized: FinalizedMergeReview | undefined;
   reviewSession: PreparedSessionFile | undefined;
@@ -393,7 +390,7 @@ async function cleanupIncompleteReview(options: {
   if (options.finalized) {
     operations.push(
       rm(options.finalized.patchFile, { force: true }),
-      deleteFinalizedRefs(options.repoRoot, options.finalized),
+      deleteFinalizedRefs(options.repository, options.finalized),
     );
   } else if (options.review) {
     operations.push(discardMergeReview(options.review));
@@ -425,7 +422,7 @@ export async function runInteractiveMergeReview(
 
   try {
     review = await startMergeReview({
-      repoRoot: options.repoRoot,
+      repository: options.repository,
       localDir: options.localDir,
       handoffCommit: options.handoffCommit,
       resultCommit: options.resultCommit,
@@ -468,7 +465,7 @@ export async function runInteractiveMergeReview(
     }
 
     finalized = await finalizeMergeReview(review);
-    await deleteFinalizedRefs(review.repoRoot, finalized);
+    await deleteFinalizedRefs(review.repository, finalized);
     const completedSession = {
       path: reviewSession.path,
       sha256: await hashFileSha256(reviewSession.path),
@@ -493,7 +490,7 @@ export async function runInteractiveMergeReview(
     if (!keepCompletedResult) {
       try {
         await cleanupIncompleteReview({
-          repoRoot: options.repoRoot,
+          repository: options.repository,
           review,
           finalized,
           reviewSession,
