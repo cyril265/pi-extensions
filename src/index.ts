@@ -25,21 +25,22 @@ import {
   deleteRef,
   diff,
   analyzeApplyPaths,
+  assertRepositoryHasCommits,
   importResult,
   initializeRepository,
   rejectUnsupportedRepository,
   removeRepositoryData,
   resolveDirectoryRepository,
-  resolveDirectoryRepositoryForLookup,
   resolveRepository,
   resolveTree,
   type RepositoryPaths,
 } from "./git.js";
-import { runInteractiveMergeReview } from "./merge-review.js";
+import { LocalFilesChangedError, runInteractiveMergeReview } from "./merge-review.js";
 import { getExecutingPiVersion } from "./pi-version.js";
 import { buildProfile } from "./profile.js";
 import {
   isSshHostUnreachableError,
+  isSshKeyLockedError,
   localHerdrInstallation,
   type TerminalAttachmentEnd,
 } from "./remote.js";
@@ -101,8 +102,6 @@ declare global {
 }
 
 const processInstanceToken = globalThis.__piRemoteHandoffProcessInstanceToken ??= randomUUID();
-
-type RepositoryContext = RepositoryPaths;
 
 interface AttachmentReservation {
   task: ActiveTaskState;
@@ -228,17 +227,16 @@ function remoteOwnsConversation(task: TaskState): boolean {
     || task.phase === "prepared";
 }
 
-async function resolveRepositoryContext(cwd: string): Promise<RepositoryContext> {
+async function resolveRepositoryContext(cwd: string): Promise<RepositoryPaths> {
   const agentDir = resolve(getAgentDir());
-  const directory = await resolveDirectoryRepositoryForLookup(cwd, agentDir);
+  const directory = await resolveDirectoryRepository(cwd, agentDir);
   const directoryTask = await loadTask(directory.commonGitDir);
   if (directoryTask) {
-    const validatedDirectory = await resolveDirectoryRepository(cwd, agentDir);
     if (
       directoryTask.repositoryKind !== "directory"
-      || directoryTask.repoRoot !== validatedDirectory.repoRoot
-      || directoryTask.commonGitDir !== validatedDirectory.commonGitDir
-      || directoryTask.privateGitDir !== validatedDirectory.privateGitDir
+      || directoryTask.repoRoot !== directory.repoRoot
+      || directoryTask.commonGitDir !== directory.commonGitDir
+      || directoryTask.privateGitDir !== directory.privateGitDir
     ) {
       throw new Error("The non-Git Remote Handoff namespace belongs to a different directory.");
     }
@@ -248,12 +246,7 @@ async function resolveRepositoryContext(cwd: string): Promise<RepositoryContext>
 }
 
 async function taskForContext(ctx: ExtensionContext): Promise<TaskState | undefined> {
-  let repository: RepositoryContext;
-  try {
-    repository = await resolveRepositoryContext(ctx.cwd);
-  } catch {
-    return undefined;
-  }
+  const repository = await resolveRepositoryContext(ctx.cwd);
   return loadTask(repository.commonGitDir);
 }
 
@@ -275,25 +268,32 @@ function statusLabel(status: RemoteWorkspaceStatus): string {
   }
 }
 
+function activeStatusLabel(
+  state: Extract<RemoteWorkspaceStatus, { kind: "active" }>["state"],
+  host: string,
+): string {
+  switch (state) {
+    case "preparing":
+      return `Remote Pi is starting on ${host}.`;
+    case "running":
+      return `Remote Pi is working on ${host}.`;
+    case "idle":
+      return `Remote turn finished on ${host}. Run /remote-handoff to attach or stop.`;
+    case "stopping":
+    case "preparing-result":
+      return `Remote Pi is preparing a result on ${host}.`;
+    case "prepared":
+      return `Remote result ready from ${host}. Run /remote-handoff to review.`;
+    case "failed":
+      return `Remote Pi failed on ${host}. Run /remote-handoff to inspect.`;
+  }
+}
+
 function controlStatusLabel(task: TaskState, status?: RemoteWorkspaceStatus): string {
   if (status) {
     switch (status.kind) {
       case "active":
-        switch (status.state) {
-          case "preparing":
-            return `Remote Pi is starting on ${task.host}.`;
-          case "running":
-            return `Remote Pi is working on ${task.host}.`;
-          case "idle":
-            return `Remote turn finished on ${task.host}. Run /remote-handoff to attach or stop.`;
-          case "stopping":
-          case "preparing-result":
-            return `Remote Pi is preparing a result on ${task.host}.`;
-          case "prepared":
-            return `Remote result ready from ${task.host}. Run /remote-handoff to review.`;
-          case "failed":
-            return `Remote Pi failed on ${task.host}. Run /remote-handoff to inspect.`;
-        }
+        return activeStatusLabel(status.state, task.host);
       case "prepared":
         return `Remote result ready from ${task.host}. Run /remote-handoff to review.`;
       case "stopped":
@@ -333,15 +333,7 @@ function remoteOwnedWithPhase(
   task: ReservedTaskState | RemoteOwnedTaskState,
   phase: RemoteOwnedTaskState["phase"],
 ): RemoteOwnedTaskState {
-  const common = { ...task, phase, authentication: task.authentication };
-  switch (phase) {
-    case "active":
-      return common;
-    case "stopped":
-      return common;
-    case "prepared":
-      return common;
-  }
+  return { ...task, phase };
 }
 
 async function reconcileRemoteTask(
@@ -688,11 +680,12 @@ async function attachWithControlConversation(
 
 async function startHandoff(
   ctx: ExtensionCommandContext,
-  repository: RepositoryContext,
+  repository: RepositoryPaths,
 ): Promise<ActiveTaskState | undefined> {
   ctx.ui.setStatus("remote-handoff", "Waiting for local Pi to become idle...");
   await ctx.waitForIdle();
   if (repository.repositoryKind === "git") {
+    await assertRepositoryHasCommits(repository);
     await rejectUnsupportedRepository(repository);
   }
 
@@ -736,7 +729,7 @@ async function startHandoff(
   let task: ReservedTaskState | undefined;
 
   try {
-    await initializeRepository(repository);
+    await initializeRepository(repository, localAgentDir);
     if (repository.repositoryKind === "directory") {
       await rejectUnsupportedRepository(repository);
     }
@@ -853,7 +846,7 @@ async function startHandoff(
       await rm(localDir, { recursive: true, force: true });
       throw error;
     }
-    if (isSshHostUnreachableError(error) || error instanceof Error && error.message === "Your SSH key is locked") {
+    if (isSshHostUnreachableError(error) || isSshKeyLockedError(error)) {
       throw error;
     }
 
@@ -1220,7 +1213,7 @@ async function applyPreparedResult(
     try {
       plan = await buildApplyPlan(ctx, task, imported.resultCommit, imported.remoteSession);
     } catch (error) {
-      if (error instanceof Error && error.message.includes("Local files changed during merge review")) {
+      if (error instanceof LocalFilesChangedError) {
         ctx.ui.notify("Local files changed during merge review. Restarting against the latest files.", "warning");
         continue;
       }
@@ -1406,7 +1399,7 @@ function registerRemoteHandoffCommand(
 }
 
 export default function registerRemoteHandoff(pi: ExtensionAPI) {
-  if (process.env.PI_REMOTE_HANDOFF_CONTROL || process.env.PI_REMOTE_HANDOFF_REVIEW === "1") return;
+  if (process.env.PI_REMOTE_HANDOFF_CONTROL || process.env.PI_REMOTE_HANDOFF_REVIEW) return;
 
   let sessionClosed = false;
   const watchers = new Map<string, NodeJS.Timeout>();
@@ -1606,8 +1599,10 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
       if (!task || !remoteOwnsConversation(task) || header.id !== task.originalSessionId) return;
       ctx.ui.notify("The target conversation belongs to an active Remote Handoff session.", "warning");
       return { cancel: true };
-    } catch {
-      return;
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
+      ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      return { cancel: true };
     }
   });
 

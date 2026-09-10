@@ -86,6 +86,13 @@ interface FinalizedMergeReview {
 
 type ReviewOutcome = "complete" | "leave";
 
+export class LocalFilesChangedError extends Error {
+  constructor() {
+    super("Local files changed during merge review. Start the review again with the current files.");
+    this.name = "LocalFilesChangedError";
+  }
+}
+
 interface ReviewPiExit {
   started: boolean;
   error?: Error;
@@ -225,7 +232,7 @@ async function finalizeMergeReview(review: MergeReview): Promise<FinalizedMergeR
         review.includedPaths,
       );
       if (!(await treesEqual(review.repository, current, review.localSnapshotCommit))) {
-        throw new Error("Local files changed during merge review. Start the review again with the current files.");
+        throw new LocalFilesChangedError();
       }
     } finally {
       await deleteRef(review.repository, checkRef);

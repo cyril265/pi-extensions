@@ -94,10 +94,7 @@ async function resolveThroughExistingAncestor(path: string): Promise<string> {
   }
 }
 
-export async function resolveDirectoryRepositoryForLookup(
-  cwd: string,
-  agentDir: string,
-): Promise<DirectoryRepositoryPaths> {
+export async function resolveDirectoryRepository(cwd: string, agentDir: string): Promise<DirectoryRepositoryPaths> {
   const repoRoot = await realpath(resolve(cwd));
   const hash = createHash("sha256").update(repoRoot).digest("hex");
   const commonGitDir = await resolveThroughExistingAncestor(
@@ -109,18 +106,6 @@ export async function resolveDirectoryRepositoryForLookup(
     commonGitDir,
     privateGitDir: join(commonGitDir, "repository.git"),
   };
-}
-
-export async function resolveDirectoryRepository(cwd: string, agentDir: string): Promise<DirectoryRepositoryPaths> {
-  const repository = await resolveDirectoryRepositoryForLookup(cwd, agentDir);
-  const canonicalAgentDir = await realpath(resolve(agentDir));
-  if (
-    !isPathEqualOrInside(canonicalAgentDir, repository.commonGitDir)
-    || isPathEqualOrInside(repository.repoRoot, repository.commonGitDir)
-  ) {
-    throw new Error("Remote Handoff storage must stay inside the Pi agent directory and outside the handed-off directory.");
-  }
-  return repository;
 }
 
 async function hasGitMarker(cwd: string): Promise<boolean> {
@@ -145,17 +130,19 @@ export async function resolveRepository(cwd: string, agentDir: string): Promise<
   }
   const repoRoot = await git(["rev-parse", "--show-toplevel"], { cwd });
   const rawCommonGitDir = await git(["rev-parse", "--git-common-dir"], { cwd: repoRoot });
-  const repository: ExistingRepositoryPaths = {
+  return {
     repositoryKind: "git",
     repoRoot,
     commonGitDir: resolveGitPath(repoRoot, rawCommonGitDir),
   };
+}
+
+export async function assertRepositoryHasCommits(repository: RepositoryPaths): Promise<void> {
   try {
     await resolveCommit(repository, "HEAD");
   } catch {
     throw new Error("The Git repository has no commits. Create its initial commit before starting a Remote Handoff.");
   }
-  return repository;
 }
 
 function isPathEqualOrInside(parent: string, candidate: string): boolean {
@@ -163,11 +150,13 @@ function isPathEqualOrInside(parent: string, candidate: string): boolean {
   return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }
 
-export async function initializeRepository(repository: RepositoryPaths): Promise<void> {
+export async function initializeRepository(repository: RepositoryPaths, agentDir: string): Promise<void> {
   if (repository.repositoryKind === "git") return;
+  const canonicalAgentDir = await realpath(resolve(agentDir));
   const resolvedCommonGitDir = await resolveThroughExistingAncestor(repository.commonGitDir);
   if (
     resolvedCommonGitDir !== repository.commonGitDir
+    || !isPathEqualOrInside(canonicalAgentDir, resolvedCommonGitDir)
     || isPathEqualOrInside(repository.repoRoot, resolvedCommonGitDir)
   ) {
     throw new Error("Remote Handoff storage must stay inside the Pi agent directory and outside the handed-off directory.");

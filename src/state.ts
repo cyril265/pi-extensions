@@ -421,57 +421,19 @@ export function taskDirectory(commonGitDir: string): string {
   return resolve(commonGitDir, "pi-remote-handoff");
 }
 
-export function taskFile(commonGitDir: string): string {
+function taskFile(commonGitDir: string): string {
   return join(taskDirectory(commonGitDir), "task.json");
-}
-
-function legacyTaskFile(commonGitDir: string): string {
-  return join(resolve(commonGitDir), "pi-cloud-resume", "task.json");
-}
-
-async function readOptionalFile(path: string): Promise<string | undefined> {
-  try {
-    return await readFile(path, "utf8");
-  } catch (error) {
-    if (hasErrorCode(error, "ENOENT")) return undefined;
-    throw error;
-  }
-}
-
-async function currentTaskContents(commonGitDir: string): Promise<string | undefined> {
-  const currentPath = taskFile(commonGitDir);
-  const legacyPath = legacyTaskFile(commonGitDir);
-  const [current, legacy] = await Promise.all([
-    readOptionalFile(currentPath),
-    readOptionalFile(legacyPath),
-  ]);
-
-  if (current !== undefined && legacy !== undefined) {
-    throw new Error(
-      `Remote Handoff found both task files: ${JSON.stringify(legacyPath)} and ${JSON.stringify(currentPath)}. Choose the authoritative handoff, safely discard the other one, then retry.`,
-    );
-  }
-  if (legacy === undefined) return current;
-
-  let value: unknown;
-  try {
-    value = JSON.parse(legacy);
-  } catch {
-    throw new Error(`Pre-rename Remote Handoff metadata at ${JSON.stringify(legacyPath)} contains invalid JSON.`);
-  }
-  if (!isRecord(value) || value.version !== 7) {
-    const version = isRecord(value) ? value.version : undefined;
-    throw new Error(`Unsupported pre-rename Remote Handoff task version: ${JSON.stringify(version)}.`);
-  }
-  throw new Error(
-    `A pre-rename version 7 Remote Handoff exists at ${JSON.stringify(legacyPath)}. Finish or discard it with the pre-rename extension before starting a new handoff in this repository.`,
-  );
 }
 
 export async function loadTask(commonGitDir: string): Promise<TaskState | undefined> {
   const expectedCommonGitDir = resolve(commonGitDir);
-  const contents = await currentTaskContents(expectedCommonGitDir);
-  if (contents === undefined) return undefined;
+  let contents: string;
+  try {
+    contents = await readFile(taskFile(expectedCommonGitDir), "utf8");
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) return undefined;
+    throw error;
+  }
   let value: unknown;
   try {
     value = JSON.parse(contents);
@@ -481,7 +443,7 @@ export async function loadTask(commonGitDir: string): Promise<TaskState | undefi
   const task = parseTask(value);
   if (task.commonGitDir !== expectedCommonGitDir) {
     throw new Error(
-      `Remote Handoff metadata belongs to a different Git common directory: expected ${JSON.stringify(expectedCommonGitDir)}, found ${JSON.stringify(task.commonGitDir)}.`,
+      `Remote Handoff metadata belongs to a different repository namespace: expected ${JSON.stringify(expectedCommonGitDir)}, found ${JSON.stringify(task.commonGitDir)}.`,
     );
   }
   return task;
@@ -509,12 +471,10 @@ async function runWithRepositoryOperationLock<T>(
   operation: (checkLock: () => void) => Promise<T>,
   wait: boolean,
 ): Promise<T> {
-  await currentTaskContents(commonGitDir);
   const directory = taskDirectory(commonGitDir);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const lockPath = `${directory}.operation`;
   return withFileLock(lockPath, wait, async (checkLock) => {
-    await currentTaskContents(commonGitDir);
     checkLock();
     return operation(checkLock);
   });
