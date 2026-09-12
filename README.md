@@ -48,6 +48,19 @@ Point `packages` at the individual file to load these.
 | [`branch-stats.ts`](branch-stats.ts) | Per-branch session statistics. |
 | [`shift-escape.ts`](shift-escape.ts) | Shift+Escape key handling in the editor. |
 | [`cache-retention-long.ts`](cache-retention-long.ts) | Sets `PI_CACHE_RETENTION=long`. |
+| [`anthropic-thinking-binding.ts`](anthropic-thinking-binding.ts) | Removes Fable 5.1 thinking block binding for eligible older Anthropic accounts. |
+
+### anthropic-thinking-binding
+
+This extension only changes requests for `anthropic/claude-fable-5-1`. It removes
+`thinking.block_binding` from the outgoing provider payload and leaves the thinking configuration,
+messages, prompts, thinking blocks, and signatures unchanged.
+
+**Warning:** Use this extension only with Anthropic accounts created before
+2026-08-31 00:00 UTC. Accounts created on or after that time enforce thinking block binding by
+default. On an account where binding is enforced, removing Pi's `drop_block` behavior can turn a
+thinking-prefix mismatch into an HTTP 400 error. Later Claude models will enforce binding for all
+accounts.
 
 ## Utilities
 

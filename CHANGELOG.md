@@ -18,6 +18,10 @@ All notable changes to this repository are documented here.
 
 ## 2026-09-11
 
+### anthropic-thinking-binding
+
+- Added a standalone Fable 5.1 extension that removes `thinking.block_binding` for eligible Anthropic accounts created before 2026-08-31 00:00 UTC.
+
 ### remote-handoff
 
 - Added the Remote Handoff extension to this repository with its standalone history.
