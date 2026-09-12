@@ -27,7 +27,7 @@ export type SubagentJob = {
 }
 
 type Joiner = {
-  resolve: (result: SubagentJobResult | undefined) => void
+  resolve: (result: SubagentJobResult) => void
   reject: (error: unknown) => void
   signal: AbortSignal | undefined
   abortHandler?: () => void
@@ -76,7 +76,6 @@ export function createJobId(
 
 export class JobRegistry {
   private readonly jobs = new Map<string, InternalJob>()
-  private readonly deliveredJobIds = new Set<string>()
   private readonly events: JobRegistryEvents
   private suppressDelivery = false
 
@@ -150,7 +149,13 @@ export class JobRegistry {
   }
 
   has(id: string): boolean {
-    return this.jobs.has(id) || this.deliveredJobIds.has(id)
+    return this.jobs.has(id)
+  }
+
+  getResult(id: string): SubagentJobResult {
+    const job = this.require(id)
+    if (!job.result) throw new Error(`Subagent job ${id} is still running`)
+    return job.result
   }
 
   isRunning(id: string): boolean {
@@ -162,14 +167,12 @@ export class JobRegistry {
     return [...this.jobs.values()].filter(job => !job.settled)
   }
 
-  join(id: string, signal: AbortSignal | undefined): Promise<SubagentJobResult | undefined> {
-    if (this.deliveredJobIds.has(id)) return Promise.resolve(undefined)
+  join(id: string, signal: AbortSignal | undefined): Promise<SubagentJobResult> {
     const job = this.require(id)
     if (signal?.aborted) return Promise.reject(abortError())
     if (job.settled) {
-      const result = this.takeResult(job)
-      if (result) this.completeDelivery(job)
-      return Promise.resolve(result)
+      this.completeDelivery(job)
+      return Promise.resolve(this.getResult(id))
     }
 
     return new Promise((resolve, reject) => {
@@ -214,6 +217,7 @@ export class JobRegistry {
       }
     }
     await Promise.all(pending.map(job => job.settle))
+    this.jobs.clear()
   }
 
   private update(job: InternalJob, details: SubagentResultDetails): void {
@@ -233,38 +237,23 @@ export class JobRegistry {
     for (const agent of job.agents) agent.state = 'done'
     this.events.onSettled?.(job, result)
 
-    const joiner = job.joiners.shift()
-    if (joiner) {
-      this.removeAbortHandler(joiner)
-      const delivered = this.takeResult(job)
-      joiner.resolve(delivered)
-      for (const extra of job.joiners.splice(0)) {
-        this.removeAbortHandler(extra)
-        extra.resolve(undefined)
+    if (job.joiners.length > 0) {
+      for (const joiner of job.joiners.splice(0)) {
+        this.removeAbortHandler(joiner)
+        joiner.resolve(result)
       }
-      if (delivered) this.completeDelivery(job)
+      this.completeDelivery(job)
     } else if (!this.suppressDelivery && this.events.onPush) {
-      const delivered = this.takeResult(job)
-      if (delivered) {
-        this.events.onPush(job, delivered)
-        this.completeDelivery(job)
-      }
+      this.events.onPush(job, result)
+      this.completeDelivery(job)
     }
     job.resolveSettle()
   }
 
-  private takeResult(job: InternalJob): SubagentJobResult | undefined {
-    if (!job.result || job.agents.every(agent => agent.state === 'delivered')) return undefined
-    for (const agent of job.agents) agent.state = 'delivered'
-    return job.result
-  }
-
   private completeDelivery(job: InternalJob): void {
-    job.result = undefined
+    if (job.agents.every(agent => agent.state === 'delivered')) return
+    for (const agent of job.agents) agent.state = 'delivered'
     job.failureResult = undefined
-    job.joiners.length = 0
-    this.jobs.delete(job.id)
-    this.deliveredJobIds.add(job.id)
     this.events.onDelivered?.(job)
   }
 
@@ -279,12 +268,6 @@ export class JobRegistry {
       joiner.signal.removeEventListener('abort', joiner.abortHandler)
     }
   }
-}
-
-export function getPushOptions(
-  isIdle: boolean,
-): { deliverAs: 'steer' } | { triggerTurn: true } {
-  return isIdle ? { triggerTurn: true } : { deliverAs: 'steer' }
 }
 
 export async function holdPrintModeJobs(

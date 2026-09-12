@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { Message } from '@earendil-works/pi-ai'
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { writePrivateFile } from './private-files.ts'
 import {
   cloneToolArgs,
@@ -83,6 +83,22 @@ export function registerHerdrChildBridge(pi: ExtensionAPI): void {
   let abortTimer: NodeJS.Timeout | undefined
   let startTimer: NodeJS.Timeout | undefined
 
+  const startPrompt = async (ctx: ExtensionContext): Promise<void> => {
+    try {
+      const model = ctx.model
+      if (!model) throw new Error('No model selected')
+      if (!(await ctx.modelRegistry.getProviderAuth(model.provider))) {
+        throw new Error(`No API key found for ${model.provider}.`)
+      }
+      pi.sendUserMessage(fs.readFileSync(promptPath, 'utf8'))
+    } catch (error) {
+      writeAtomic(resultPath, {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
   pi.on('session_start', (_event, ctx) => {
     abortTimer = setInterval(() => {
       if (!fs.existsSync(abortPath)) return
@@ -104,7 +120,7 @@ export function registerHerdrChildBridge(pi: ExtensionAPI): void {
       if (!fs.existsSync(startPath)) return
       clearInterval(startTimer)
       startTimer = undefined
-      pi.sendUserMessage(fs.readFileSync(promptPath, 'utf8'))
+      void startPrompt(ctx)
     }, 100)
   })
 

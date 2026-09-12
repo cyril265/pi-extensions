@@ -43,7 +43,7 @@ import { formatTokenCount } from './usage.ts'
 
 export const INLINE_RESULT_MAX_CHARACTERS = 2048
 const PARENT_ASSIGNED_RUN_INSTRUCTION =
-  'Do not call runSubAgents, joinSubAgents, runSubAgentsWithContext, or the subagent CLI during this run; they are unavailable.'
+  'Do not call runSubAgents, runSubAgentsWithContext, or the simple-subagent Node client during this run.'
 
 export function getParentAssignedPrompt(prompt: string): string {
   return `${prompt}${prompt ? '\n\n' : ''}${PARENT_ASSIGNED_RUN_INSTRUCTION}`
@@ -169,7 +169,9 @@ export function startJob(
     if (agent.forkOverride) {
       throw new Error(`forkOverride requires forkParent for subagent "${agent.name}"`)
     }
-    if (!agent.cwd) throw new Error(`cwd is required for isolated subagent "${agent.name}"`)
+    if (!agent.cwd || !path.isAbsolute(agent.cwd)) {
+      throw new Error(`cwd must be an absolute path for isolated subagent "${agent.name}"`)
+    }
     if (!agent.thinking) {
       throw new Error(`thinking is required for isolated subagent "${agent.name}"`)
     }

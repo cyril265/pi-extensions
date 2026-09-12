@@ -1,20 +1,18 @@
 import { StringEnum } from '@earendil-works/pi-ai'
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { Text } from '@earendil-works/pi-tui'
-import { Type } from 'typebox'
+import { type Static, Type } from 'typebox'
 import type { SimpleSubagentConfig } from './config.ts'
 import {
   formatElapsed,
   renderDispatchResult,
   formatResultText,
   renderAgentsOverview,
-  renderLiveCompact,
   renderSubagentWidget,
 } from './display.ts'
 import { startJob } from './execute-subagents.ts'
 import {
   createJobId,
-  getPushOptions,
   holdPrintModeJobs,
   JobRegistry,
   type SubagentJob,
@@ -22,7 +20,7 @@ import {
   type SubagentJobResult,
 } from './jobs.ts'
 import { getSubagentSessionPath, resolveSubagentSessionKey } from './sessions.ts'
-import type { SubagentRequest, SubagentResultDetails, ThinkingLevel } from './types.ts'
+import type { SubagentResultDetails, ThinkingLevel } from './types.ts'
 
 const SIMPLE_SUBAGENT_FORK_TOOL_ENV = 'PI_SIMPLE_SUBAGENT_FORK_TOOL'
 type PendingForkJob = {
@@ -30,33 +28,46 @@ type PendingForkJob = {
   toolCallId: string
   agents: Array<{ name: string; prompt: string; sessionKey: string; forkParent: true }>
 }
-type DeliveredSubagentJob = {
-  jobId: string
-  kind: SubagentJobKind
-  result: SubagentJobResult
-}
-type ForkedSubagentResultsDetails = {
-  jobs: DeliveredSubagentJob[]
-}
 type SubagentDispatchDetails = {
   jobId: string
   agents: Array<{ name: string; sessionKey: string }>
 }
-export type IsolatedDispatchRequest = SubagentRequest & {
-  cwd: string
-  thinking: ThinkingLevel
-}
+
+export const isolatedAgentsSchema = Type.Array(
+  Type.Object(
+    {
+      name: Type.String({ minLength: 1 }),
+      prompt: Type.String({ minLength: 1 }),
+      cwd: Type.String({ minLength: 1, description: 'Absolute path' }),
+      thinking: StringEnum(['low', 'medium', 'high', 'xhigh', 'max'] as const),
+      overrideModel: Type.Optional(
+        Type.String({
+          minLength: 1,
+          description: 'Configured alias or provider/model. Omit to inherit the parent model.',
+        }),
+      ),
+      sessionKey: Type.Optional(
+        Type.String({
+          minLength: 1,
+          description:
+            'Reuse to continue a child session; omit to generate one. Do not run the same cwd + sessionKey concurrently.',
+        }),
+      ),
+    },
+    { additionalProperties: false },
+  ),
+  { minItems: 1 },
+)
+export type IsolatedDispatchRequest = Static<typeof isolatedAgentsSchema>[number]
 
 export type RegisteredSubagentTools = {
-  runSubAgentsTool: ToolDefinition<any, SubagentDispatchDetails>
-  joinSubAgentsTool: ToolDefinition<any, SubagentResultDetails | undefined>
   dispatchIsolated: (
     requests: IsolatedDispatchRequest[],
     toolCallId: string,
     ctx: ExtensionContext,
   ) => SubagentJob
-  join: (jobId: string, signal: AbortSignal | undefined) => Promise<SubagentJobResult | undefined>
-  cancel: (jobId: string) => boolean
+  join: (jobId: string, signal: AbortSignal | undefined) => Promise<SubagentJobResult>
+  listRunning: () => SubagentJob[]
 }
 
 function getMessageText(content: string | Array<{ type: string; text?: string }>): string {
@@ -208,21 +219,9 @@ export function registerSubagentTools(
       widgetRenders.delete(job.id)
     },
     onPush(job, result) {
-      const ctx = jobContexts.get(job.id)
-      if (!ctx) throw new Error(`Missing context for subagent job ${job.id}`)
-      const isIdle = ctx.isIdle()
-      pi.sendMessage(
-        {
-          customType: 'forked-subagent-results',
-          content: isIdle
-            ? `Subagent job ${job.id} finished:\n\n${result.text}`
-            : `Subagent job ${job.id} finished.\nContinue your current work and use these findings where relevant.\n\n${result.text}`,
-          display: true,
-          details: {
-            jobs: [{ jobId: job.id, kind: job.kind, result }],
-          } satisfies ForkedSubagentResultsDetails,
-        },
-        getPushOptions(isIdle),
+      pi.sendUserMessage(
+        `Subagent job ${job.id} finished.\nContinue your current work and use these findings where relevant.\n\n${result.text}`,
+        { deliverAs: 'steer' },
       )
     },
     onDelivered(job) {
@@ -270,18 +269,8 @@ export function registerSubagentTools(
     }
   }
 
-  const runSubAgentsParameters = Type.Object({
-    agents: Type.Array(
-      Type.Object({
-        thinking: StringEnum(['low', 'medium', 'high', 'xhigh', 'max'] as const),
-        name: Type.String(),
-        prompt: Type.String(),
-        cwd: Type.String(),
-        overrideModel: Type.Optional(Type.String()),
-        sessionKey: Type.Optional(Type.String()),
-      }),
-    ),
-  })
+  const runSubAgentsParameters = Type.Object({ agents: isolatedAgentsSchema })
+  const aliases = Object.keys(config.modelAliases)
   const runSubAgentsTool: ToolDefinition<
     typeof runSubAgentsParameters,
     SubagentDispatchDetails
@@ -289,12 +278,9 @@ export function registerSubagentTools(
     name: 'runSubAgents',
     label: 'Run Subagents',
     description: `
-        Compatibility tool for existing callers and multi-agent batches. For one isolated agent, use the shell CLI instead: subagent dispatch for automatic delivery, or subagent run when later shell work needs the exact response.
-        Dispatch self-contained work to isolated subagents and return a job ID plus session keys immediately. A subagent does not receive the parent context, so its prompt must include all required context. Results are delivered automatically.
-        Results from one call are delivered only after every agent finishes. Batch agents only when you need their results together; dispatch separate calls for independently actionable tasks so each result arrives as soon as it is ready.
-        sessionKey: Choose a key for a new or existing child session, or omit it to generate one. Reuse a key when follow-up work should continue with the existing session context, and use distinct keys within one call.
-        overrideModel: ${Object.keys(config.modelAliases).length > 0 ? `options ${Object.keys(config.modelAliases).join(', ')}` : 'use provider/model'}
-        thinking: low|medium|high|xhigh|max
+        Start subagents and return immediately; one result message per call arrives when all its agents finish. Subagents do not see your conversation and cannot delegate. Do other work or end your turn. Do not poll.
+        From Node: \`const { dispatch, run } = await import(process.env.PI_SIMPLE_SUBAGENT_CLIENT)\`, same agents array. \`dispatch\` behaves like this tool. When a result must feed further work in the same step, \`await run(agents)\` waits and returns \`{ isError, text, agents: [{ name, output?, ... }] }\`.
+        ${aliases.length > 0 ? `overrideModel aliases: ${aliases.join(', ')}` : ''}
         `,
     parameters: runSubAgentsParameters,
     prepareArguments: parseStringifiedAgents,
@@ -346,67 +332,17 @@ export function registerSubagentTools(
 
   pi.registerTool(runSubAgentsTool)
 
-  const joinSubAgentsParameters = Type.Object({
-    jobId: Type.String({
-      description: 'Job ID from runSubAgentsResult.details.jobId',
-    }),
-  })
-  const joinSubAgentsTool: ToolDefinition<
-    typeof joinSubAgentsParameters,
-    SubagentResultDetails | undefined
-  > = {
-    name: 'joinSubAgents',
-    label: 'Join Subagents',
-    description:
-      'Join a runSubAgents job inside agentWorkflowScript when a later call in the same script needs its result.',
-    parameters: joinSubAgentsParameters,
-    renderCall(args, theme) {
-      return new Text(
-        `${theme.fg('toolTitle', theme.bold('joinSubAgents'))} ${theme.fg('accent', args.jobId)}`,
-        0,
-        0,
-      )
-    },
-    renderResult(result, _options, theme) {
-      if (result.details?.agents.length) {
-        return new Text(renderLiveCompact(result.details.agents, theme), 0, 0)
-      }
-      return new Text(formatResultText(getMessageText(result.content), theme), 0, 0)
-    },
-    async execute(_toolCallId, params, signal) {
-      assertSubagentToolsAvailable()
-      const result = await jobs.join(params.jobId, signal)
-      if (!result) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Job ${params.jobId} has no undelivered results.`,
-            },
-          ],
-          details: undefined,
-        }
-      }
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Subagent job ${params.jobId} finished:\n${result.text}`,
-          },
-        ],
-        details: result.details,
-      }
-    },
-  }
-
-  pi.registerTool(joinSubAgentsTool)
-
   const runSubAgentsWithContextParameters = Type.Object({
     agents: Type.Array(
       Type.Object({
         name: Type.String(),
         prompt: Type.String(),
-        sessionKey: Type.Optional(Type.String()),
+        sessionKey: Type.Optional(
+          Type.String({
+            description:
+              'Reuse to continue a fork; omit to generate one. Do not run the same key concurrently.',
+          }),
+        ),
       }),
     ),
   })
@@ -418,10 +354,7 @@ export function registerSubagentTools(
     name: 'runSubAgentsWithContext',
     label: 'Run Subagents With Context',
     description: `
-      Fork the parent context into parallel subagents and return a job ID plus session keys immediately. Use only when requested.
-      Results from one call are delivered only after every agent finishes. Batch agents only when you need their results together; dispatch separate calls for independently actionable tasks so each result arrives as soon as it is ready.
-      Each child inherits and locks the parent's cwd, provider/model, and thinking level.
-      sessionKey: Choose a key for a new or existing fork, or omit it to generate one.
+      Fork your conversation into subagents and return a job ID plus session keys immediately. Use only when the user asks for it. One result message per call arrives when all its agents finish. Children inherit and lock cwd, model, and thinking. Subagents cannot delegate.
     `,
     parameters: runSubAgentsWithContextParameters,
     renderCall(args, theme) {
@@ -512,19 +445,18 @@ export function registerSubagentTools(
     },
   }
 
-  pi.registerMessageRenderer('forked-subagent-results', (message, _options, theme) => {
-    const details = message.details as ForkedSubagentResultsDetails | undefined
-    if (!details?.jobs.length) return new Text(getMessageText(message.content), 0, 0)
-    return new Text(
-      details.jobs
-        .map(job => {
-          const title = job.kind === 'fork' ? 'runSubAgentsWithContext' : 'runSubAgents'
-          return `${theme.fg('muted', `job ${job.jobId}`)}\n${renderLiveCompact(job.result.details.agents, theme, title)}`
-        })
-        .join('\n\n'),
-      0,
-      0,
-    )
+  pi.registerTool({
+    name: 'cancelSubAgents',
+    label: 'Cancel Subagents',
+    description: 'Cancel a running subagent job.',
+    parameters: Type.Object({ jobId: Type.String({ minLength: 1 }) }),
+    async execute(_toolCallId, params) {
+      if (!jobs.cancel(params.jobId)) throw new Error(`No running subagent job ${params.jobId}`)
+      return {
+        content: [{ type: 'text', text: `Cancelling subagent job ${params.jobId}; its result arrives as interrupted.` }],
+        details: undefined,
+      }
+    },
   })
 
   pi.registerCommand('subagents', {
@@ -632,10 +564,8 @@ export function registerSubagentTools(
   })
 
   return {
-    runSubAgentsTool,
-    joinSubAgentsTool,
     dispatchIsolated,
     join: (jobId, signal) => jobs.join(jobId, signal),
-    cancel: jobId => jobs.cancel(jobId),
+    listRunning: () => jobs.listRunning(),
   }
 }

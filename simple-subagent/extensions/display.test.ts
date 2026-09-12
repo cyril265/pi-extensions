@@ -99,7 +99,6 @@ test('renders dispatch results without repeating the raw tool response', () => {
     [
       'dispatched · job deadbeef · 1 agent',
       'reviewer → reviewer-a1b2c3d4',
-      'join with joinSubAgents({ jobId: "deadbeef" })',
     ].join('\n'),
   )
 })

@@ -101,7 +101,7 @@ function invokePi(
         '--thinking',
         thinking,
         '--tools',
-        'read,write,edit,bash,grep,find,ls,agentWorkflowScript,runSubAgents,joinSubAgents',
+        'read,write,edit,bash,grep,find,ls,runSubAgents,cancelSubAgents',
         ...extensionArgs,
         prompt,
       ],

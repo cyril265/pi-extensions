@@ -191,7 +191,6 @@ export function renderDispatchResult(
   return [
     `${theme.fg('success', 'dispatched')}${theme.fg('dim', ' · job ')}${theme.fg('accent', jobId)}${theme.fg('dim', ` · ${count}`)}`,
     ...agents.map(agent => theme.fg('dim', `${agent.name} → ${agent.sessionKey}`)),
-    theme.fg('dim', `join with joinSubAgents({ jobId: "${jobId}" })`),
   ].join('\n')
 }
 

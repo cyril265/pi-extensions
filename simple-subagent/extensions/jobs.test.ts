@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   createJobId,
-  getPushOptions,
   holdPrintModeJobs,
   JobRegistry,
   type SubagentJobResult,
@@ -46,7 +45,7 @@ function failure(error: unknown): SubagentJobResult {
   }
 }
 
-test('settles into one waiting join and never delivers the same result twice', async () => {
+test('settles into a waiting join and keeps the result retrievable without pushing', async () => {
   let finish!: (value: SubagentJobResult) => void
   const run = new Promise<SubagentJobResult>(resolve => {
     finish = resolve
@@ -69,7 +68,8 @@ test('settles into one waiting join and never delivers the same result twice', a
   assert.equal((await joined)?.text, 'done')
   assert.deepEqual(pushed, [])
   assert.deepEqual(job.agents.map(agent => agent.state), ['delivered'])
-  assert.equal(await jobs.join(job.id, undefined), undefined)
+  assert.equal((await jobs.join(job.id, undefined)).text, 'done')
+  assert.deepEqual(pushed, [])
 })
 
 test('pushes settled results once and steers a running agent', async () => {
@@ -88,9 +88,8 @@ test('pushes settled results once and steers a running agent', async () => {
   await job.settle
 
   assert.deepEqual(pushed, ['pushed'])
-  assert.equal(await jobs.join(job.id, undefined), undefined)
-  assert.deepEqual(getPushOptions(false), { deliverAs: 'steer' })
-  assert.deepEqual(getPushOptions(true), { triggerTurn: true })
+  assert.equal((await jobs.join(job.id, undefined)).text, 'pushed')
+  assert.deepEqual(pushed, ['pushed'])
 })
 
 test('aborting join leaves the job running for later push delivery', async () => {

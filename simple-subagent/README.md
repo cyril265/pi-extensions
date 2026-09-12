@@ -2,17 +2,18 @@
 
 Pi extension for asynchronous subagents:
 
-- `subagent dispatch` starts one isolated agent and returns immediately
-- `subagent run` starts one isolated agent and writes its complete response to stdout
-- `subagent cancel <jobId>` cancels a running job
-- `runSubAgents({ agents: [...] })`, `joinSubAgents({ jobId })`, and `agentWorkflowScript({ code })` remain available for compatibility
+- `runSubAgents({ agents: [...] })` starts an array of isolated agents and returns immediately
+- the Node client's `dispatch(agents)` does the same from a script; its `run(agents)` waits and resolves with every agent's output
+- `cancelSubAgents({ jobId })` cancels a running job
 - `runSubAgentsWithContext({ agents: [...] })` asynchronously forks the parent context; disabled by default
 - `/subagents` opens a running-job picker with cancellation; `/subagents cancel <jobId>` is the scriptable path
 
-When a job settles without a waiting join, its results are pushed into the parent conversation. Pi
-queues the message as steering while streaming or starts a result-processing turn while idle.
-Cancelling a waiting `joinSubAgents` call leaves the job running. Jobs are cancelled on session shutdown,
-`/new`, session switches, and `/subagents cancel`.
+`runSubAgents` and the fork tool push completed results as user messages into the parent
+conversation. Pi queues the message as steering while streaming or starts a result-processing turn
+while idle. The client's `run` returns the result to its caller instead. The registry retains
+completed results until the owning session shuts down. Disconnecting a waiting `run` leaves the
+job running. Jobs are cancelled on session shutdown, `/new`, session switches, `cancelSubAgents`,
+and `/subagents cancel`.
 
 The TUI shows a ticking compact widget with job counts and each agent's latest tool call.
 
@@ -32,56 +33,66 @@ Then reload:
 /reload
 ```
 
-## Shell CLI
+## Node client
 
-The extension adds `subagent` to the shell-tool `PATH` for each live Pi session. It works in
-Pi's Bash and PowerShell tools on macOS, Linux, and Windows. It does not work in a normal terminal
-or after the owning Pi session shuts down.
+For each live Pi session the extension sets `PI_SIMPLE_SUBAGENT_CLIENT` to a `file://` URL of
+`client.mjs`. A Node script run through Pi's bash tool imports it to start agents whose prompts
+are built in code, for example from a skill's template files or a diff. Outside a live session
+both functions reject. `node` must be on `PATH`.
 
-Send every prompt through stdin. `dispatch` returns after the extension accepts the job. The parent
-can keep working, and the completed result arrives in the parent conversation through the same
-automatic delivery used by `runSubAgents`.
-
-```bash
-printf '%s\n' 'Review the current changes.' |
-  subagent dispatch --name reviewer --thinking high
+```js
+const { dispatch, run } = await import(process.env.PI_SIMPLE_SUBAGENT_CLIENT)
 ```
 
-`run` waits and writes the child's complete, unformatted response to stdout. It writes the job ID
-and session key to stderr, so command substitution and pipelines receive only the response.
+Both take the same array as `runSubAgents.agents`: every entry needs `name`, `prompt`, an
+absolute `cwd`, and `thinking`; `overrideModel` and `sessionKey` are optional; unknown keys are
+rejected.
 
-```bash
-review=$(printf '%s\n' 'Write a one-line review.' |
-  subagent run --name reviewer --thinking high)
-printf '%s\n' "$review"
+`dispatch(agents)` behaves like the tool: it resolves at once with
+`{ jobId, agents: [{ name, sessionKey }] }` and the result is pushed into the parent conversation
+when every agent finishes. Use it when the parent should keep working or end its turn.
+
+`run(agents)` waits for every agent and resolves with the result, which is the way to use one
+agent's output in the same step, for example to feed it into a second agent or to write it to
+a file without the parent reading it:
+
+```js
+const result = await run([
+  { name: 'reviewer', prompt: 'Review the current changes for correctness.', cwd: process.cwd(), thinking: 'high' },
+])
+if (result.isError) throw new Error(result.text)
+console.log(result.agents[0].output)
 ```
 
-Each invocation accepts one agent. Use shell background jobs and `wait` for independent work:
-
-```bash
-printf '%s\n' 'Review correctness.' | subagent dispatch --name correctness --thinking high &
-printf '%s\n' 'Review tests.' | subagent dispatch --name tests --thinking high &
-wait
+```ts
+{
+  jobId: string
+  isError: boolean          // any agent failed or was interrupted; always check it
+  text: string              // the report runSubAgents would deliver, including failure reasons
+  agents: Array<{
+    name: string
+    sessionKey: string
+    status: 'done' | 'failed' | 'interrupted'
+    output?: string         // the agent's final response; absent when no result was recorded
+    exitCode?: number
+    sessionId?: string
+    sessionPath?: string    // resume with `pi --session <sessionPath>`
+    outputPath?: string
+    effectiveModel?: string
+    usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; turns: number }
+  }>
+}
 ```
 
-Both commands require `--name` and `--thinking`. `--cwd` defaults to the shell process's current
-directory. `--model` defaults to the parent model. `--session-key` resumes or names a durable child
-session. `--model` accepts a configured alias or `provider/model`.
+Both functions reject on connection, authentication, and validation errors. A failed agent does
+not reject `run`; read `isError` and `text`. The same `cwd + sessionKey` cannot run twice in
+parallel; sequential reuse continues the child session.
 
-Cancel a running job with either `/subagents` or:
-
-```bash
-subagent cancel <jobId>
-```
-
-`dispatch` writes the job ID and session key to stdout. `run` writes them to stderr. Interrupting a
-waiting `run` removes that waiter but does not cancel the child. If the job later finishes, automatic
-parent delivery receives its result. Jobs exist only in the active Pi session, but their child Pi
-sessions remain on disk and can be resumed with the returned session key.
-
-Exit code `0` means dispatch or cancellation was accepted, or `run` completed successfully. Exit
-code `1` reports connection, server, cancellation, or child failure. Exit code `2` reports invalid
-arguments or empty stdin.
+Killing the script while `run` waits leaves the job running, and its result is pushed to the
+parent conversation instead. If the script disconnects after the job settled but before the
+response was written, nothing is pushed; the result stays in the run directory and the child
+session. The child processes inherit `PI_SIMPLE_SUBAGENT_*`, but a managed child's own
+extension replaces them, and its bridge rejects both functions during the parent-assigned run.
 
 ## Configuration
 
@@ -146,7 +157,7 @@ Herdr supports one global transient Agent-view projection. Herdr can reject setu
 another plugin owns that projection; in that case the tool uses the fallback described below.
 The projection ends when the server exits or the companion plugin is disabled or unlinked.
 
-## Compatibility Pi tools
+## Isolated agent fields
 
 - uses caller model
 - `overrideModel`: optional per-agent model override. Configured aliases resolve through `modelAliases`; `provider/model` selects an explicit model. Unknown bare aliases fail immediately. Runtime details use `suppliedModel` for the provided value and `effectiveModel` for the resolved model.
@@ -154,89 +165,7 @@ The projection ends when the server exits or the companion plugin is disabled or
 - `prompt`: prompt sent to child pi process
 - result output reports the final context used without exposing aggregate usage or cost
 - results of 2048 characters or fewer are inlined alongside the result path
-- `cwd`: working directory for child pi run
-
-## agentWorkflowScript
-
-Use shell pipelines and `subagent run` for normal isolated-agent handoffs. `agentWorkflowScript`
-remains for existing callers and JavaScript handoffs that shell composition cannot express. It runs
-its `code` as an async JavaScript function body in a fresh worker. The worker
-has a frozen `tools` object and a captured `console` object. It has no Pi imports or persistent
-state. The tool call always displays the complete script with JavaScript syntax highlighting.
-The result starts with one status and timing line, renders console output in muted text, and
-syntax-highlights JSON returns. It shows at most ten return-value lines until expanded; status and
-console lines do not count toward that limit.
-
-The `tools` object exposes exactly these methods:
-
-```text
-read
-write
-edit
-bash
-grep
-find
-ls
-runSubAgents
-joinSubAgents
-```
-
-Every successful call resolves to:
-
-```ts
-{
-  text: string
-  content: Array<TextContent | ImageContent>
-  details: unknown
-}
-```
-
-Validation and execution failures reject the call, so scripts can use normal `try/catch`.
-Calls can run sequentially or through `Promise.all`.
-
-```js
-const template = await tools.read({ path: "/absolute/path/to/reviewer.md" })
-const diff = await tools.bash({ command: "git diff main...HEAD" })
-const prompt = `${template.text}\n\n${diff.text}`
-
-return tools.runSubAgents({
-  agents: [
-    {
-      name: "correctness",
-      thinking: "high",
-      cwd: "/absolute/path/to/project",
-      prompt,
-    },
-    {
-      name: "simplicity",
-      thinking: "high",
-      cwd: "/absolute/path/to/project",
-      prompt,
-    },
-  ],
-})
-```
-
-Strings returned by the script stay unchanged. Other JSON-serializable values are formatted as
-indented JSON. Omitting a return or returning `undefined` fails. Captured console lines appear
-before the returned value. Combined output is limited to 2000 lines or 50KB. When it exceeds
-either limit, the result includes the path to a temporary file containing the complete output.
-
-`agentWorkflowScript` is not a security sandbox. Run only code you trust. Nested native calls use Pi's stock
-implementations with the parent `cwd` and effective image and shell settings. They do not use
-active or overridden tool instances. They also bypass active-tool restrictions, permission
-extensions, and nested `tool_call` or `tool_result` hooks. The outer `agentWorkflowScript` call still uses
-Pi's normal tool lifecycle.
-
-Pressing Escape terminates the worker and aborts active native calls. A waiting
-`joinSubAgents` call is removed, but dispatched subagent jobs keep running. Session shutdown
-also terminates workers, then applies simple-subagent's existing behavior of cancelling all jobs.
-If a script returns while one of its tool promises is unresolved, `agentWorkflowScript` aborts those calls
-and fails.
-
-Joining keeps the existing winner-takes-result behavior. A waiting join gets the result first. If
-push delivery wins first, a later join reports that no undelivered result remains.
-`runSubAgentsWithContext`, extension tools, and MCP tools are not available inside `agentWorkflowScript`.
+- `cwd`: absolute working directory for the child pi run; a relative path is rejected
 
 ## Isolated subagent behavior
 
@@ -250,9 +179,8 @@ right/down as their shape changes so larger runs stay usable. Before a new run, 
 in the workspace are closed while active panes remain. Workspace setup uses a kernel-owned lock
 that is released if the launcher crashes.
 
-During its parent-assigned run, a subagent cannot call `runSubAgents`, `joinSubAgents`,
-`runSubAgentsWithContext`, or the `subagent` CLI. `agentWorkflowScript` remains available, but its nested `runSubAgents` and
-`joinSubAgents` calls hit the same lock. Once the run settles, the subagent tools become
+During its parent-assigned run, a subagent cannot call `runSubAgents`,
+`runSubAgentsWithContext`, or the Node client. Once the run settles, the subagent tools become
 available in the retained Herdr pane for normal interactive continuation. Their schemas remain
 active while execution is locked so the provider prompt-cache prefix does not change at
 settlement; the assigned prompt instructs the agent not to call them. Reusing a session key starts
@@ -302,22 +230,20 @@ Enable the separate fork tool with `enableForkTool` in `~/.pi/agent/simple-subag
 - fork sessions have unique Pi session IDs and inherit the parent's prompt cache key so OpenAI routes parent and child requests to the same cache identity across processes and connections
 - fork dispatch returns `terminate: true`; execution starts after the scheduling turn has persisted its tool result
 - fork progress and child tool calls are shown live above the editor, then retained in the result message
-- completed fork results use the same join-or-push delivery as isolated jobs
+- completed fork results are delivered automatically
 - each fork reports first-turn parent-cache usage explicitly without conflating cache telemetry with child execution success
 
 - `/forkTab` forks the current session into a new interactive Herdr tab, inherits the model and thinking level, and sends no prompt
 
-## Prompting evals
+## Evals
 
-The prompting evals run Pi with `openai-codex/gpt-5.6-sol` at medium thinking and verify which
-tool it calls. Routing cases cover dependent handoffs, coding work the parent must inspect, and
-independent parent and subagent calls. They block tool execution after capturing the call, so they
-do not start subagents. Each routing scenario runs three times. The lifecycle cases run real Pi
-children through the CLI and cover automatic delivery, blocking output, disconnection,
-cancellation, session locking, and long responses.
+For interface comparisons based on completed coding tasks, parent progress, dependencies,
+recovery, and token usage, see [behavior evals](evals/behavior/README.md). They compare the
+production tools alone (`native`) with production tools plus the Node client (`client`).
+`npm run eval:behavior` previews a campaign; add `--execute` to make real model calls.
+Defaults are one repetition and four trials, with shared request/token/time caps;
+`--rerun-failed` targets saved failures and `--regrade` recomputes reports offline.
 
-```bash
-npm run test:prompting
-```
-
-Run the slower join lifecycle cases on their own with `npm run test:join`.
+`npm run test:live` runs Pi with `openai-codex/gpt-5.6-sol` at medium thinking against real
+children and covers tool routing, automatic delivery, the Node client's blocking output,
+disconnection, cancellation, session locking, and long responses.

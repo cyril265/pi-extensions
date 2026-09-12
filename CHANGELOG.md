@@ -2,6 +2,20 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-09-12
+
+### simple-subagent
+
+- Added the Node client `client.mjs`. Inside a live session `PI_SIMPLE_SUBAGENT_CLIENT` holds its `file://` URL. `dispatch(agents)` starts isolated agents and returns the job receipt like the tool; `run(agents)` waits and resolves with `{ jobId, isError, text, agents }`, where each agent carries its final `output`, `status`, `sessionKey`, `sessionPath`, `exitCode`, and `usage`.
+- Added the `cancelSubAgents({ jobId })` tool.
+- Removed the `subagent` shell CLI (`bin/`), `PI_SIMPLE_SUBAGENT_NODE`, the `agentWorkflowScript` tool, and the system-prompt paragraph about the CLI. The `runSubAgents` description now explains when to use the Node client; per-field guidance moved into the parameter schema.
+- `runSubAgents` and the client share one schema: unknown agent fields, blank strings, empty arrays, and relative `cwd` are rejected.
+- Removed the unused `forked-subagent-results` message renderer.
+- Removed `joinSubAgents`; the client's `run` owns blocking result delivery.
+- All job completions are delivered through user-message steering. Idle sessions run prompt hooks and receive the same message as steering.
+- Added `evals/behavior/`: outcome-based evals with ten coding and lifecycle scenarios, real parent/child sessions, deterministic oracles, `native` and `client` arms, campaign request/token/time caps, failed-only reruns (`--rerun-failed`) and offline regrading (`--regrade`).
+- Tests: `extensions/client.integration.test.ts` replaces the CLI integration test and covers the client through the real bash tool, cancellation of a running child, disconnects, and session shutdown. `npm run test:live` runs the ported lifecycle cases. Behavior evals compare `native` and `client`; the evaluator now records settlement from the production push message.
+
 ## 2026-09-11
 
 ### remote-handoff

@@ -3,17 +3,14 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "bin": {
-    "subagent": "./bin/subagent.mjs"
-  },
   "engines": {
     "node": ">=26.0.0 <27"
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "node --test extensions/*.test.ts herdr/*.test.ts",
-    "test:join": "node --test --test-concurrency=1 evals/join-usage.test.ts",
-    "test:prompting": "node --test --test-concurrency=1 evals/*.test.ts"
+    "test": "node --test extensions/*.test.ts herdr/*.test.ts evals/behavior/*.test.ts",
+    "test:live": "node --test --test-concurrency=1 evals/client-lifecycle.test.ts",
+    "eval:behavior": "node evals/behavior/runner.ts"
   },
   "keywords": [
     "pi-package"

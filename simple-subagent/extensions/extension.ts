@@ -1,9 +1,8 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import { registerCliBridge } from './cli-server.ts'
+import { registerClientBridge } from './client-bridge.ts'
 import { readSimpleSubagentConfig } from './config.ts'
 import { registerHerdrChildBridge } from './herdr-child.ts'
 import { isHerdrTerminal, openHerdrForkTab } from './herdr-tab.ts'
-import { registerNodeScriptTool } from './script-tool.ts'
 import { registerSubagentTools } from './tools.ts'
 import type { ThinkingLevel } from './types.ts'
 
@@ -16,8 +15,6 @@ export default function (pi: ExtensionAPI) {
   const config = readSimpleSubagentConfig()
 
   registerHerdrChildBridge(pi)
-  let stopNodeScripts: () => Promise<void> = async () => {}
-  pi.on('session_shutdown', () => stopNodeScripts())
 
   if (inheritedPromptCacheKey) {
     pi.on('before_provider_request', event => {
@@ -59,9 +56,8 @@ export default function (pi: ExtensionAPI) {
     },
   })
 
-  const cliBridge = registerCliBridge(pi, config.modelAliases)
+  const clientBridge = registerClientBridge(pi)
   const subagentTools = registerSubagentTools(pi, isSubagentProcess, config)
-  cliBridge.attach(subagentTools)
-  cliBridge.registerClosureWait()
-  stopNodeScripts = registerNodeScriptTool(pi, subagentTools)
+  clientBridge.attach(subagentTools)
+  clientBridge.registerClosureWait()
 }

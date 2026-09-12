@@ -58,10 +58,11 @@ test('lists configured aliases only in the isolated subagent tool description', 
   })
   startSession?.({ reason: 'startup' }, {})
 
-  assert.match(tools[0].description, /options opus, codex/)
-  assert.doesNotMatch(tools[1].description, /options opus, codex/)
-  assert.equal(registered.runSubAgentsTool, tools[0])
-  assert.equal(registered.joinSubAgentsTool, tools[1])
+  const byName = Object.fromEntries(tools.map(tool => [tool.name, tool]))
+  assert.match(byName.runSubAgents.description, /aliases: opus, codex/)
+  assert.doesNotMatch(byName.runSubAgentsWithContext.description, /aliases: opus, codex/)
+  assert.ok(byName.cancelSubAgents)
+  assert.deepEqual(Object.keys(registered), ['dispatchIsolated', 'join', 'listRunning'])
 })
 
 test('locks subagent tools only for managed process startup', () => {
@@ -77,7 +78,7 @@ test('keeps tool schemas active while locking their execution during the assigne
     name: string
     execute: (
       toolCallId: string,
-      params: { jobId: string },
+      params: unknown,
       signal: AbortSignal | undefined,
     ) => Promise<unknown>
   }
@@ -98,68 +99,13 @@ test('keeps tool schemas active while locking their execution during the assigne
   registerSubagentTools(pi, true, { enableForkTool: false, modelAliases: {} })
   handlers.get('session_start')?.({ reason: 'startup' }, {})
 
-  const joinTool = tools.find(tool => tool.name === 'joinSubAgents')
-  assert.ok(joinTool)
+  const runTool = tools.find(tool => tool.name === 'runSubAgents')
+  assert.ok(runTool)
   await assert.rejects(
-    joinTool.execute('join-call', { jobId: 'missing' }, undefined),
+    runTool.execute('run-call', { agents: [] }, undefined),
     /Subagent tools are unavailable during this run/,
   )
 
   handlers.get('agent_settled')?.()
-  await assert.rejects(
-    joinTool.execute('join-call', { jobId: 'missing' }, undefined),
-    /Unknown subagent job: missing/,
-  )
   assert.equal(activeToolChanges, 0)
-})
-
-test('pushes a fork spawn failure from turn_end as steering', async () => {
-  const tools: Array<{
-    name: string
-    execute: (...args: any[]) => Promise<{ content: Array<{ type: string; text: string }> }>
-  }> = []
-  const handlers = new Map<string, (...args: any[]) => unknown>()
-  const sent: Array<{ message: { customType: string; content: string }; options: unknown }> = []
-  const pi = {
-    registerTool: (tool: (typeof tools)[number]) => tools.push(tool),
-    registerMessageRenderer: () => {},
-    registerCommand: () => {},
-    on: (event: string, handler: (...args: any[]) => unknown) => handlers.set(event, handler),
-    getThinkingLevel: () => 'high',
-    sendMessage: (message: { customType: string; content: string }, options: unknown) => {
-      sent.push({ message, options })
-    },
-  } as unknown as ExtensionAPI
-  const ctx = {
-    cwd: '/tmp',
-    mode: 'json',
-    model: { provider: 'test', id: 'model' },
-    isIdle: () => false,
-    sessionManager: {
-      getSessionFile: () => undefined,
-    },
-  }
-
-  registerSubagentTools(pi, false, { enableForkTool: true, modelAliases: {} })
-  handlers.get('session_start')?.({ reason: 'startup' }, ctx)
-  const forkTool = tools.find(tool => tool.name === 'runSubAgentsWithContext')
-  assert.ok(forkTool)
-  const dispatch = await forkTool.execute(
-    'fork-call',
-    { agents: [{ name: 'reviewer', prompt: 'Review', sessionKey: 'fork-key' }] },
-    undefined,
-    undefined,
-    ctx,
-  )
-  assert.match(dispatch.content[0].text, /jobId:/)
-
-  await handlers.get('turn_end')?.({}, ctx)
-
-  assert.equal(sent.length, 1)
-  assert.equal(sent[0].message.customType, 'forked-subagent-results')
-  assert.match(
-    sent[0].message.content,
-    /Continue your current work and use these findings where relevant\.\n\nForked subagents failed: Parent context can only be forked from a persisted session/,
-  )
-  assert.deepEqual(sent[0].options, { deliverAs: 'steer' })
 })

@@ -1,8 +1,0 @@
-#!/bin/sh
-
-if [ -z "$PI_SIMPLE_SUBAGENT_ENDPOINT" ] || [ -z "$PI_SIMPLE_SUBAGENT_TOKEN" ] || [ -z "$PI_SIMPLE_SUBAGENT_NODE" ]; then
-  echo "subagent: available only inside a live Pi session" >&2
-  exit 1
-fi
-
-exec "$PI_SIMPLE_SUBAGENT_NODE" "$(dirname "$0")/subagent.mjs" "$@"
