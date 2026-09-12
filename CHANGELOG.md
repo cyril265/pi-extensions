@@ -16,6 +16,21 @@ All notable changes to this repository are documented here.
 - Added `evals/behavior/`: outcome-based evals with ten coding and lifecycle scenarios, real parent/child sessions, deterministic oracles, `native` and `client` arms, campaign request/token/time caps, failed-only reruns (`--rerun-failed`) and offline regrading (`--regrade`).
 - Tests: `extensions/client.integration.test.ts` replaces the CLI integration test and covers the client through the real bash tool, cancellation of a running child, disconnects, and session shutdown. `npm run test:live` runs the ported lifecycle cases. Behavior evals compare `native` and `client`; the evaluator now records settlement from the production push message.
 
+### pi-last-turn-review
+
+- `/annotate-turn`: comments now anchor to the innermost markdown element (heading, paragraph, list item, table row, single code line) instead of whole top-level blocks. Click an element to comment on it (`Esc` in an empty card deletes it); comment cards are placed directly under the target (inside the list item, under the table row, after the code line). Text selections spanning several elements send the source line range instead of the selected text. Code fences render one line per row.
+- Replaced the Monaco diff editor with `@pierre/diffs` `CodeView`. All files of a turn now render stacked in one scroll region with sticky headers; the sidebar is a table of contents that follows the scroll position.
+- Comments: click a line number for one line, drag across line numbers for a range. Comments on the old side, new side and file level render inline as annotations.
+- Per-file header actions: File comment, Mark reviewed (collapses the file), Collapse.
+- Toolbar: Unified/Split, Wrap, Show full files. `j`/`k` move between files, `Cmd/Ctrl+Enter` finishes the review, `Esc` in an empty comment deletes it.
+- Syntax highlighting runs in a `@pierre/diffs` worker pool with the wasm Oniguruma engine, with main-thread fallback if workers fail.
+- `@pierre/diffs` (24 languages, see `scripts/shiki-shim.js`) and the compiled Tailwind CSS are prebuilt into `web/vendor/` by `npm run build:vendor` and inlined into the page. `markdown-it` for `/annotate-turn` is bundled the same way. Neither window needs network access.
+- Incoming files only re-render themselves instead of invalidating every item. Files that fail to load show the error inline in the scroll region.
+- The review window requests all file contents at open; the host protocol and submit payload are unchanged.
+- Added `test/harness.mts` and `test/smoke.js`: opens the real window through glimpseui, drives comments with pointer events and asserts the submit payload.
+- Added `test/annotate-harness.mts` and `test/annotate-smoke.mts`: same setup for `/annotate-turn`, checks markdown anchors and the submit payload.
+- `.gitattributes` marks `web/vendor/**` as generated and disables its textual diff.
+
 ## 2026-09-11
 
 ### anthropic-thinking-binding

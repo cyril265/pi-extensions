@@ -1,99 +1,56 @@
-const reviewData = JSON.parse(document.getElementById('diff-review-data').textContent || '{}')
+const { CodeView, parseDiffFromFile, getOrCreateWorkerPoolSingleton } = window.PierreDiffs
 
-const defaultReviewTheme = {
-  appearance: 'dark',
-  bg: '#0b1020',
-  panel: '#111827',
-  hover: '#1f2937',
-  active: '#243044',
-  badge: '#1e293b',
-  border: '#263244',
-  text: '#e5e7eb',
-  strong: '#f8fafc',
-  muted: '#9ca3af',
-  dim: '#6b7280',
-  accent: '#60a5fa',
-  success: '#34d399',
-  error: '#fb7185',
-  warning: '#fbbf24',
-  diffAdded: '#22c55e',
-  diffRemoved: '#ef4444',
+const workerSource = new Blob([document.getElementById('diffs-worker-source').textContent], { type: 'text/javascript' })
+const workerPool = getOrCreateWorkerPoolSingleton({
+  poolOptions: { workerFactory: () => new Worker(URL.createObjectURL(workerSource)) },
+  highlighterOptions: { preferredHighlighter: 'shiki-wasm' },
+})
+
+const reviewData = JSON.parse(document.getElementById('diff-review-data').textContent)
+const reviewTheme = reviewData.theme
+
+const root = document.documentElement
+root.style.colorScheme = reviewTheme.appearance
+for (const [key, value] of Object.entries(reviewTheme)) {
+  if (key === 'appearance') continue
+  const cssName = key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)
+  root.style.setProperty(`--color-review-${cssName}`, value)
 }
-const reviewTheme = { ...defaultReviewTheme, ...(reviewData.theme || {}) }
-
-function applyReviewTheme() {
-  const root = document.documentElement
-  root.style.colorScheme = reviewTheme.appearance
-  root.style.setProperty('--color-review-bg', reviewTheme.bg)
-  root.style.setProperty('--color-review-panel', reviewTheme.panel)
-  root.style.setProperty('--color-review-hover', reviewTheme.hover)
-  root.style.setProperty('--color-review-active', reviewTheme.active)
-  root.style.setProperty('--color-review-badge', reviewTheme.badge)
-  root.style.setProperty('--color-review-border', reviewTheme.border)
-  root.style.setProperty('--color-review-text', reviewTheme.text)
-  root.style.setProperty('--color-review-strong', reviewTheme.strong)
-  root.style.setProperty('--color-review-muted', reviewTheme.muted)
-  root.style.setProperty('--color-review-accent', reviewTheme.accent)
-  root.style.setProperty('--color-review-success', reviewTheme.success)
-  root.style.setProperty('--color-review-error', reviewTheme.error)
-  root.style.setProperty('--color-review-warning', reviewTheme.warning)
-  root.style.setProperty('--color-review-diff-added', reviewTheme.diffAdded)
-  root.style.setProperty('--color-review-diff-removed', reviewTheme.diffRemoved)
-}
-
-applyReviewTheme()
 
 const state = {
-  activeFileId: null,
-  currentScope: 'review',
   comments: [],
   overallComment: '',
-  hideUnchanged: false,
-  wrapLines: true,
   collapsedDirs: {},
   reviewedFiles: {},
-  scrollPositions: {},
+  collapsedFiles: {},
   sidebarCollapsed: false,
   fileFilter: '',
-  fileContents: {},
+  fileDiffs: {},
   fileErrors: {},
-  pendingRequestIds: {},
+  versions: {},
+  activeFileId: reviewData.files[0].id,
 }
 
-const sidebarEl = document.getElementById('sidebar')
-const sidebarTitleEl = document.getElementById('sidebar-title')
-const sidebarSearchInputEl = document.getElementById('sidebar-search-input')
-const toggleSidebarButton = document.getElementById('toggle-sidebar-button')
-const windowTitleEl = document.getElementById('window-title')
-const repoRootEl = document.getElementById('repo-root')
-const fileTreeEl = document.getElementById('file-tree')
-const summaryEl = document.getElementById('summary')
-const currentFileLabelEl = document.getElementById('current-file-label')
-const modeHintEl = document.getElementById('mode-hint')
-const fileCommentsContainer = document.getElementById('file-comments-container')
-const editorContainerEl = document.getElementById('editor-container')
-const submitButton = document.getElementById('submit-button')
-const cancelButton = document.getElementById('cancel-button')
-const undoButton = document.getElementById('undo-button')
-const overallCommentButton = document.getElementById('overall-comment-button')
-const fileCommentButton = document.getElementById('file-comment-button')
-const toggleReviewedButton = document.getElementById('toggle-reviewed-button')
-const toggleUnchangedButton = document.getElementById('toggle-unchanged-button')
-const toggleWrapButton = document.getElementById('toggle-wrap-button')
+const el = id => document.getElementById(id)
+const sidebarEl = el('sidebar')
+const sidebarSearchInputEl = el('sidebar-search-input')
+const toggleSidebarButton = el('toggle-sidebar-button')
+const fileTreeEl = el('file-tree')
+const summaryEl = el('summary')
+const codeViewEl = el('code-view')
+const submitButton = el('submit-button')
+const toggleStyleButton = el('toggle-style-button')
+const toggleWrapButton = el('toggle-wrap-button')
+const toggleUnchangedButton = el('toggle-unchanged-button')
+const undoButton = el('undo-button')
 
-repoRootEl.textContent = reviewData.repoRoot || ''
-windowTitleEl.textContent = reviewData.title || 'Review'
+el('repo-root').textContent = reviewData.repoRoot
+el('window-title').textContent = reviewData.title
+el('sidebar-title').textContent = reviewData.scopeLabel
+el('mode-hint').textContent = reviewData.scopeHint
 undoButton.classList.toggle('hidden', reviewData.mode !== 'last-turn')
 
-let monacoApi = null
-let diffEditor = null
-let originalModel = null
-let modifiedModel = null
-let originalDecorations = []
-let modifiedDecorations = []
-let activeViewZones = []
-let editorResizeObserver = null
-let requestSequence = 0
+const fileById = new Map(reviewData.files.map(file => [file.id, file]))
 
 function escapeHtml(value) {
   return String(value)
@@ -103,46 +60,218 @@ function escapeHtml(value) {
     .replace(/"/g, '&quot;')
 }
 
-function inferLanguage(path) {
-  if (!path) return 'plaintext'
-  const lower = path.toLowerCase()
-  if (lower.endsWith('.ts') || lower.endsWith('.tsx')) return 'typescript'
-  if (
-    lower.endsWith('.js') ||
-    lower.endsWith('.jsx') ||
-    lower.endsWith('.mjs') ||
-    lower.endsWith('.cjs')
-  )
-    return 'javascript'
-  if (lower.endsWith('.json')) return 'json'
-  if (lower.endsWith('.md')) return 'markdown'
-  if (lower.endsWith('.css')) return 'css'
-  if (lower.endsWith('.html')) return 'html'
-  if (lower.endsWith('.sh')) return 'shell'
-  if (lower.endsWith('.yml') || lower.endsWith('.yaml')) return 'yaml'
-  if (lower.endsWith('.rs')) return 'rust'
-  if (lower.endsWith('.java')) return 'java'
-  if (lower.endsWith('.kt')) return 'kotlin'
-  if (lower.endsWith('.py')) return 'python'
-  if (lower.endsWith('.go')) return 'go'
-  return 'plaintext'
+function newId() {
+  return `${Date.now()}:${Math.random().toString(16).slice(2)}`
 }
 
-function scopeLabel(_scope) {
-  return reviewData.scopeLabel || 'Git diff'
+function commentsForFile(fileId) {
+  return state.comments.filter(comment => comment.fileId === fileId)
 }
 
-function scopeHint(_scope) {
-  return (
-    reviewData.scopeHint ||
-    'Review changes. Hover or click line numbers in the gutter to add an inline comment.'
-  )
+function fileSide(file) {
+  return file.comparison.hasModified ? 'modified' : 'original'
 }
 
-function statusLabel(status) {
-  if (!status) return ''
-  return status.charAt(0).toUpperCase() + status.slice(1)
+function toCommentSide(annotationSide, file) {
+  if (annotationSide === 'deletions') return 'original'
+  if (annotationSide === 'additions') return 'modified'
+  return fileSide(file)
 }
+
+function toAnnotationSide(comment) {
+  const side = comment.side === 'file' ? fileSide(fileById.get(comment.fileId)) : comment.side
+  return side === 'original' ? 'deletions' : 'additions'
+}
+
+function formatCommentTitle(comment) {
+  if (comment.side === 'file') return 'File comment'
+  const range =
+    comment.endLine !== comment.startLine
+      ? `L${comment.startLine}-L${comment.endLine}`
+      : `L${comment.startLine}`
+  return `${comment.side === 'original' ? 'Old' : 'New'} ${range}`
+}
+
+function removeComment(commentId) {
+  const comment = state.comments.find(item => item.id === commentId)
+  state.comments = state.comments.filter(item => item.id !== commentId)
+  refreshItem(comment.fileId)
+  renderTree()
+}
+
+function addComment(comment) {
+  state.comments.push(comment)
+  refreshItem(comment.fileId)
+  renderTree()
+}
+
+function renderComment(comment) {
+  const container = document.createElement('div')
+  container.className = 'review-comment'
+  container.innerHTML = `
+    <div class="mb-2 flex items-center justify-between gap-3">
+      <div class="text-xs font-semibold text-review-text">${escapeHtml(formatCommentTitle(comment))}</div>
+      <button data-action="delete" class="cursor-pointer rounded-md border border-transparent px-2 py-1 text-xs font-medium text-review-muted hover:bg-review-error/10 hover:text-review-error">Delete</button>
+    </div>
+    <textarea class="scrollbar-thin min-h-[76px] w-full resize-y rounded-md border border-review-border bg-review-bg px-3 py-2 text-sm text-review-text outline-none focus:border-review-accent focus:ring-1 focus:ring-review-accent" placeholder="Leave a comment"></textarea>
+  `
+  const textarea = container.querySelector('textarea')
+  textarea.value = comment.body
+  textarea.addEventListener('input', () => {
+    comment.body = textarea.value
+  })
+  textarea.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && textarea.value.trim() === '') removeComment(comment.id)
+  })
+  container.querySelector('[data-action="delete"]').addEventListener('click', () => {
+    removeComment(comment.id)
+  })
+  if (comment.body === '') requestAnimationFrame(() => textarea.focus())
+  return container
+}
+
+function renderHeaderActions(_fileDiff, context) {
+  const fileId = context.item.id
+  const reviewed = state.reviewedFiles[fileId] === true
+  const collapsed = state.collapsedFiles[fileId] === true
+  const container = document.createElement('div')
+  container.className = 'flex items-center gap-2 font-sans'
+  container.innerHTML = `
+    <button data-action="file-comment" class="cursor-pointer rounded border border-review-border bg-review-panel px-2 py-0.5 text-[11px] font-medium text-review-text hover:bg-review-hover">File comment</button>
+    <button data-action="reviewed" class="cursor-pointer rounded border px-2 py-0.5 text-[11px] font-medium ${reviewed ? 'border-review-success/40 bg-review-success/15 text-review-success' : 'border-review-border bg-review-panel text-review-text hover:bg-review-hover'}">${reviewed ? 'Reviewed' : 'Mark reviewed'}</button>
+    <button data-action="collapse" class="cursor-pointer rounded border border-review-border bg-review-panel px-2 py-0.5 text-[11px] font-medium text-review-text hover:bg-review-hover">${collapsed ? 'Expand' : 'Collapse'}</button>
+  `
+  container.querySelector('[data-action="file-comment"]').addEventListener('click', () => {
+    addComment({
+      id: newId(),
+      fileId,
+      scope: 'review',
+      side: 'file',
+      startLine: null,
+      endLine: null,
+      body: '',
+    })
+  })
+  container.querySelector('[data-action="reviewed"]').addEventListener('click', () => {
+    const next = !reviewed
+    state.reviewedFiles[fileId] = next
+    state.collapsedFiles[fileId] = next
+    refreshItem(fileId)
+    renderTree()
+  })
+  container.querySelector('[data-action="collapse"]').addEventListener('click', () => {
+    state.collapsedFiles[fileId] = !collapsed
+    refreshItem(fileId)
+  })
+  return container
+}
+
+const viewOptions = {
+  theme: { light: 'pierre-light', dark: 'pierre-dark' },
+  themeType: reviewTheme.appearance,
+  preferredHighlighter: 'shiki-wasm',
+  diffStyle: 'unified',
+  overflow: 'wrap',
+  expandUnchanged: false,
+  stickyHeaders: true,
+  enableLineSelection: true,
+  renderAnnotation: annotation => renderComment(annotation.metadata),
+  renderHeaderMetadata: renderHeaderActions,
+  onLineSelectionEnd(range, context) {
+    if (range == null) return
+    const file = fileById.get(context.item.id)
+    addComment({
+      id: newId(),
+      fileId: file.id,
+      scope: 'review',
+      side: toCommentSide(range.side, file),
+      startLine: Math.min(range.start, range.end),
+      endLine: Math.max(range.start, range.end),
+      body: '',
+    })
+    codeView.clearSelectedLines()
+  },
+}
+const codeView = new CodeView(viewOptions, workerPool)
+codeView.setup(codeViewEl)
+
+function isLoaded(file) {
+  return state.fileDiffs[file.id] != null || state.fileErrors[file.id] != null
+}
+
+function buildItem(fileId) {
+  const version = state.versions[fileId] ?? 0
+  const error = state.fileErrors[fileId]
+  if (error != null) {
+    return { id: fileId, type: 'file', version, file: { name: fileById.get(fileId).path, contents: `Failed to load: ${error}` } }
+  }
+  return {
+    id: fileId,
+    type: 'diff',
+    fileDiff: state.fileDiffs[fileId],
+    version,
+    collapsed: state.collapsedFiles[fileId] === true,
+    annotations: commentsForFile(fileId).map(comment => ({
+      side: toAnnotationSide(comment),
+      lineNumber: comment.side === 'file' ? 0 : comment.endLine,
+      metadata: comment,
+    })),
+  }
+}
+
+function refreshItem(fileId) {
+  state.versions[fileId] = (state.versions[fileId] ?? 0) + 1
+  codeView.updateItem(buildItem(fileId))
+}
+
+function syncItems() {
+  codeView.setItems(reviewData.files.filter(isLoaded).map(file => buildItem(file.id)))
+}
+
+function requestAllFiles() {
+  for (const file of reviewData.files) {
+    window.glimpse.send({ type: 'request-file', requestId: newId(), fileId: file.id, scope: 'review' })
+  }
+}
+
+window.__reviewReceive = message => {
+  const file = fileById.get(message.fileId)
+  if (message.type === 'file-data') {
+    const { comparison } = file
+    const oldFile = comparison.hasOriginal
+      ? { name: comparison.oldPath, contents: message.originalContent }
+      : null
+    const newFile = comparison.hasModified
+      ? { name: comparison.newPath, contents: message.modifiedContent }
+      : null
+    state.fileDiffs[file.id] = parseDiffFromFile(oldFile, newFile)
+    syncItems()
+  }
+  if (message.type === 'file-error') {
+    state.fileErrors[file.id] = message.message
+    syncItems()
+  }
+  renderTree()
+}
+
+function scrollToFile(fileId) {
+  state.activeFileId = fileId
+  codeView.scrollTo({ type: 'item', id: fileId, align: 'start' })
+  renderTree()
+}
+
+codeView.subscribeToScroll(scrollTop => {
+  const threshold = scrollTop + codeViewEl.clientHeight / 3
+  const loaded = reviewData.files.filter(isLoaded)
+  let active = loaded[0]
+  for (const file of loaded) {
+    if (codeView.getTopForItem(file.id) <= threshold) active = file
+  }
+  if (active != null && active.id !== state.activeFileId) {
+    state.activeFileId = active.id
+    renderTree()
+  }
+})
 
 function statusBadgeClass(status) {
   switch (status) {
@@ -157,81 +286,15 @@ function statusBadgeClass(status) {
   }
 }
 
-function isFileReviewed(fileId) {
-  return state.reviewedFiles[fileId] === true
-}
-
-function getScopedFiles() {
-  return reviewData.files
-}
-
-function ensureActiveFileForScope() {
-  const scopedFiles = getScopedFiles()
-  if (scopedFiles.length === 0) {
-    state.activeFileId = null
-    return
-  }
-  if (scopedFiles.some(file => file.id === state.activeFileId)) {
-    return
-  }
-  state.activeFileId = scopedFiles[0].id
-}
-
-function activeFile() {
-  return reviewData.files.find(file => file.id === state.activeFileId) ?? null
-}
-
-function getScopeComparison(file, _scope = state.currentScope) {
-  if (!file) return null
-  return file.comparison
-}
-
-function activeComparison() {
-  return getScopeComparison(activeFile(), state.currentScope)
-}
-
-function activeFileShowsDiff() {
-  return activeComparison() != null
-}
-
-function activeFileShowsSplitDiff() {
-  const comparison = activeComparison()
-  return comparison != null && comparison.status !== 'added'
-}
-
-function getScopeFilePath(file) {
-  const comparison = getScopeComparison(file, state.currentScope)
-  return comparison?.newPath || comparison?.oldPath || file?.path || ''
-}
-
-function getScopeDisplayPath(file, scope = state.currentScope) {
-  const comparison = getScopeComparison(file, scope)
-  return comparison?.displayPath || file?.path || ''
-}
-
-function getFileSearchPath(file) {
-  return file?.path || ''
-}
-
 function getBaseName(path) {
-  const parts = path.split('/')
-  return parts[parts.length - 1] || path
-}
-
-function getActiveStatus(file) {
-  const comparison = getScopeComparison(file, state.currentScope)
-  return comparison?.status ?? file?.worktreeStatus ?? null
+  return path.slice(path.lastIndexOf('/') + 1)
 }
 
 function normalizeQuery(query) {
-  return String(query || '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, '')
+  return query.trim().toLowerCase().replace(/\s+/g, '')
 }
 
 function scoreSubsequence(query, candidate) {
-  if (!query) return 0
   let queryIndex = 0
   let score = 0
   let firstMatchIndex = -1
@@ -239,77 +302,50 @@ function scoreSubsequence(query, candidate) {
 
   for (let i = 0; i < candidate.length && queryIndex < query.length; i += 1) {
     if (candidate[i] !== query[queryIndex]) continue
-
     if (firstMatchIndex === -1) firstMatchIndex = i
     score += 10
-
-    if (i === previousMatchIndex + 1) {
-      score += 8
-    }
-
+    if (i === previousMatchIndex + 1) score += 8
     const previousChar = i > 0 ? candidate[i - 1] : ''
-    if (
-      i === 0 ||
-      previousChar === '/' ||
-      previousChar === '_' ||
-      previousChar === '-' ||
-      previousChar === '.'
-    ) {
-      score += 12
-    }
-
+    if (i === 0 || '/_-.'.includes(previousChar)) score += 12
     previousMatchIndex = i
     queryIndex += 1
   }
 
   if (queryIndex !== query.length) return -1
-  if (firstMatchIndex >= 0) score += Math.max(0, 20 - firstMatchIndex)
-  return score
+  return score + Math.max(0, 20 - firstMatchIndex)
 }
 
 function getFileSearchScore(query, file) {
-  const normalizedQuery = normalizeQuery(query)
-  if (!normalizedQuery) return 0
-
-  const path = getFileSearchPath(file).toLowerCase()
+  const path = file.path.toLowerCase()
   const baseName = getBaseName(path)
-  const pathScore = scoreSubsequence(normalizedQuery, path)
-  const baseScore = scoreSubsequence(normalizedQuery, baseName)
+  const pathScore = scoreSubsequence(query, path)
+  const baseScore = scoreSubsequence(query, baseName)
   let score = Math.max(pathScore, baseScore >= 0 ? baseScore + 40 : -1)
-
   if (score < 0) return -1
-  if (baseName === normalizedQuery) score += 200
-  else if (baseName.startsWith(normalizedQuery)) score += 120
-  else if (path.includes(normalizedQuery)) score += 35
-
+  if (baseName === query) score += 200
+  else if (baseName.startsWith(query)) score += 120
+  else if (path.includes(query)) score += 35
   return score
 }
 
 function getFilteredFiles() {
-  const scopedFiles = getScopedFiles()
-  const query = state.fileFilter.trim()
-  if (!query) return [...scopedFiles]
-
-  return scopedFiles
+  const query = normalizeQuery(state.fileFilter)
+  if (query === '') return reviewData.files
+  return reviewData.files
     .map(file => ({ file, score: getFileSearchScore(query, file) }))
     .filter(entry => entry.score >= 0)
-    .sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score
-      return getFileSearchPath(a.file).localeCompare(getFileSearchPath(b.file))
-    })
+    .sort((a, b) => b.score - a.score || a.file.path.localeCompare(b.file.path))
     .map(entry => entry.file)
 }
 
 function buildTree(files) {
-  const root = { name: '', path: '', kind: 'dir', children: new Map(), file: null }
+  const rootNode = { children: new Map() }
   for (const file of files) {
-    const path = getFileSearchPath(file)
-    const parts = path.split('/')
-    let node = root
+    const parts = file.path.split('/')
+    let node = rootNode
     let currentPath = ''
-    for (let i = 0; i < parts.length; i += 1) {
-      const part = parts[i]
-      const isLeaf = i === parts.length - 1
+    parts.forEach((part, index) => {
+      const isLeaf = index === parts.length - 1
       currentPath = currentPath ? `${currentPath}/${part}` : part
       if (!node.children.has(part)) {
         node.children.set(part, {
@@ -321,99 +357,36 @@ function buildTree(files) {
         })
       }
       node = node.children.get(part)
-      if (isLeaf) node.file = file
-    }
+    })
   }
-  return root
+  return rootNode
 }
 
-function cacheKey(scope, fileId) {
-  return `${scope}:${fileId}`
+function fileMarker(file) {
+  if (state.reviewedFiles[file.id]) return '<span class="shrink-0 text-[10px] text-review-success">●</span>'
+  if (state.fileErrors[file.id]) return '<span class="shrink-0 text-[10px] text-review-error">!</span>'
+  if (!isLoaded(file)) return '<span class="shrink-0 text-[10px] text-review-accent">…</span>'
+  return '<span class="shrink-0 text-[10px] text-transparent">●</span>'
 }
 
-function scrollKey(scope, fileId) {
-  return `${scope}:${fileId}`
+function fileBadges(file) {
+  const count = commentsForFile(file.id).length
+  const status = file.comparison.status
+  return `
+    <span class="flex shrink-0 items-center gap-1.5">
+      ${count > 0 ? `<span class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-review-badge px-1 text-[10px] font-medium text-review-text">${count}</span>` : ''}
+      <span class="font-medium ${statusBadgeClass(status)}">${status.charAt(0).toUpperCase()}</span>
+    </span>
+  `
 }
 
-function saveCurrentScrollPosition() {
-  if (!(diffEditor && state.activeFileId)) return
-  const originalEditor = diffEditor.getOriginalEditor()
-  const modifiedEditor = diffEditor.getModifiedEditor()
-  state.scrollPositions[scrollKey(state.currentScope, state.activeFileId)] = {
-    originalTop: originalEditor.getScrollTop(),
-    originalLeft: originalEditor.getScrollLeft(),
-    modifiedTop: modifiedEditor.getScrollTop(),
-    modifiedLeft: modifiedEditor.getScrollLeft(),
-  }
-}
-
-function restoreFileScrollPosition() {
-  if (!(diffEditor && state.activeFileId)) return
-  const scrollState = state.scrollPositions[scrollKey(state.currentScope, state.activeFileId)]
-  if (!scrollState) return
-  const originalEditor = diffEditor.getOriginalEditor()
-  const modifiedEditor = diffEditor.getModifiedEditor()
-  originalEditor.setScrollTop(scrollState.originalTop)
-  originalEditor.setScrollLeft(scrollState.originalLeft)
-  modifiedEditor.setScrollTop(scrollState.modifiedTop)
-  modifiedEditor.setScrollLeft(scrollState.modifiedLeft)
-}
-
-function captureScrollState() {
-  if (!diffEditor) return null
-  const originalEditor = diffEditor.getOriginalEditor()
-  const modifiedEditor = diffEditor.getModifiedEditor()
-  return {
-    originalTop: originalEditor.getScrollTop(),
-    originalLeft: originalEditor.getScrollLeft(),
-    modifiedTop: modifiedEditor.getScrollTop(),
-    modifiedLeft: modifiedEditor.getScrollLeft(),
-  }
-}
-
-function restoreScrollState(scrollState) {
-  if (!(diffEditor && scrollState)) return
-  const originalEditor = diffEditor.getOriginalEditor()
-  const modifiedEditor = diffEditor.getModifiedEditor()
-  originalEditor.setScrollTop(scrollState.originalTop)
-  originalEditor.setScrollLeft(scrollState.originalLeft)
-  modifiedEditor.setScrollTop(scrollState.modifiedTop)
-  modifiedEditor.setScrollLeft(scrollState.modifiedLeft)
-}
-
-function getRequestState(fileId, scope = state.currentScope) {
-  const key = cacheKey(scope, fileId)
-  return {
-    contents: state.fileContents[key],
-    error: state.fileErrors[key],
-    requestId: state.pendingRequestIds[key],
-  }
-}
-
-function ensureFileLoaded(fileId, scope = state.currentScope) {
-  if (!fileId) return
-  const key = cacheKey(scope, fileId)
-  if (state.fileContents[key] != null) return
-  if (state.fileErrors[key] != null) return
-  if (state.pendingRequestIds[key] != null) return
-
-  const requestId = `request:${Date.now()}:${++requestSequence}`
-  state.pendingRequestIds[key] = requestId
-  renderTree()
-  if (window.glimpse?.send) {
-    window.glimpse.send({ type: 'request-file', requestId, fileId, scope })
-  }
-}
-
-function openFile(fileId) {
-  if (state.activeFileId === fileId) {
-    ensureFileLoaded(fileId, state.currentScope)
-    return
-  }
-  saveCurrentScrollPosition()
-  state.activeFileId = fileId
-  renderAll({ restoreFileScroll: true })
-  ensureFileLoaded(fileId, state.currentScope)
+function fileRowClass(file, extra) {
+  const active = file.id === state.activeFileId
+  return [
+    'group flex w-full items-center justify-between gap-2 px-2 py-1 text-left text-[13px]',
+    active ? 'bg-review-active text-review-strong' : 'text-review-text hover:bg-review-hover',
+    extra,
+  ].join(' ')
 }
 
 function renderTreeNode(node, depth) {
@@ -422,16 +395,15 @@ function renderTreeNode(node, depth) {
     return a.name.localeCompare(b.name)
   })
 
-  const indentPx = 12
-
   for (const child of children) {
+    const row = document.createElement('button')
+    row.type = 'button'
+
     if (child.kind === 'dir') {
       const collapsed = state.collapsedDirs[child.path] === true
-      const row = document.createElement('button')
-      row.type = 'button'
       row.className =
         'group flex w-full items-center gap-1.5 px-2 py-1 text-left text-[13px] text-review-text hover:bg-review-hover'
-      row.style.paddingLeft = `${depth * indentPx + 8}px`
+      row.style.paddingLeft = `${depth * 12 + 8}px`
       row.innerHTML = `
         <svg class="h-4 w-4 shrink-0 text-review-muted transition-transform ${collapsed ? '-rotate-90' : ''}" viewBox="0 0 16 16" fill="currentColor">
           <path d="M12.78 6.22a.749.749 0 0 1 0 1.06l-4.25 4.25a.749.749 0 0 1-1.06 0L3.22 7.28a.749.749 0 0 1 1.06-1.06L8 9.939l3.72-3.719a.749.749 0 0 1 1.06 0Z"></path>
@@ -448,173 +420,102 @@ function renderTreeNode(node, depth) {
     }
 
     const file = child.file
-    const count = state.comments.filter(
-      comment => comment.fileId === file.id && comment.scope === state.currentScope,
-    ).length
-    const reviewed = isFileReviewed(file.id)
-    const requestState = getRequestState(file.id, state.currentScope)
-    const loading = requestState.requestId != null && requestState.contents == null
-    const errored = requestState.error != null
-    const status = getActiveStatus(file)
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = [
-      'group flex w-full items-center justify-between gap-2 px-2 py-1 text-left text-[13px]',
-      file.id === state.activeFileId
-        ? 'bg-review-active text-review-strong'
-        : reviewed
-          ? 'text-review-text hover:bg-review-hover'
-          : 'text-review-muted hover:bg-review-hover hover:text-review-text',
-    ].join(' ')
-    button.style.paddingLeft = `${depth * indentPx + 26}px`
-    button.innerHTML = `
-      <span class="flex min-w-0 items-center gap-1.5 truncate ${file.id === state.activeFileId ? 'font-medium' : ''}">
-        <span class="shrink-0 text-[10px] ${reviewed ? 'text-review-success' : errored ? 'text-review-error' : loading ? 'text-review-accent' : 'text-transparent'}">${reviewed ? '●' : errored ? '!' : loading ? '…' : '●'}</span>
+    row.className = fileRowClass(file, '')
+    row.style.paddingLeft = `${depth * 12 + 26}px`
+    row.innerHTML = `
+      <span class="flex min-w-0 items-center gap-1.5 truncate">
+        ${fileMarker(file)}
         <span class="truncate">${escapeHtml(child.name)}</span>
       </span>
-      <span class="flex shrink-0 items-center gap-1.5">
-        ${count > 0 ? `<span class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-review-badge px-1 text-[10px] font-medium text-review-text">${count}</span>` : ''}
-        ${status ? `<span class="font-medium ${statusBadgeClass(status)}">${escapeHtml(statusLabel(status).charAt(0))}</span>` : ''}
-      </span>
+      ${fileBadges(file)}
     `
-    button.addEventListener('click', () => openFile(file.id))
-    fileTreeEl.appendChild(button)
+    row.addEventListener('click', () => scrollToFile(file.id))
+    fileTreeEl.appendChild(row)
   }
 }
 
 function renderSearchResults(files) {
   for (const file of files) {
-    const path = getFileSearchPath(file)
-    const baseName = getBaseName(path)
-    const parentPath = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''
-    const count = state.comments.filter(
-      comment => comment.fileId === file.id && comment.scope === state.currentScope,
-    ).length
-    const reviewed = isFileReviewed(file.id)
-    const requestState = getRequestState(file.id, state.currentScope)
-    const loading = requestState.requestId != null && requestState.contents == null
-    const errored = requestState.error != null
-    const status = getActiveStatus(file)
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = [
-      'group flex w-full items-center justify-between gap-3 rounded-md px-2 py-2 text-left',
-      file.id === state.activeFileId
-        ? 'bg-review-active text-review-strong'
-        : 'text-review-text hover:bg-review-hover',
-    ].join(' ')
-    button.innerHTML = `
+    const parentPath = file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : ''
+    const row = document.createElement('button')
+    row.type = 'button'
+    row.className = fileRowClass(file, 'rounded-md py-2')
+    row.innerHTML = `
       <span class="min-w-0 flex-1">
         <span class="flex items-center gap-1.5">
-          <span class="shrink-0 text-[10px] ${reviewed ? 'text-review-success' : errored ? 'text-review-error' : loading ? 'text-review-accent' : 'text-transparent'}">${reviewed ? '●' : errored ? '!' : loading ? '…' : '●'}</span>
-          <span class="truncate text-[13px] ${file.id === state.activeFileId ? 'font-medium' : ''}">${escapeHtml(baseName)}</span>
+          ${fileMarker(file)}
+          <span class="truncate">${escapeHtml(getBaseName(file.path))}</span>
         </span>
-        <span class="mt-0.5 block truncate pl-[14px] text-[11px] ${file.id === state.activeFileId ? 'text-review-text' : 'text-review-muted'}">${escapeHtml(parentPath || path)}</span>
+        <span class="mt-0.5 block truncate pl-[14px] text-[11px] text-review-muted">${escapeHtml(parentPath)}</span>
       </span>
-      <span class="flex shrink-0 items-center gap-1.5">
-        ${count > 0 ? `<span class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-review-badge px-1 text-[10px] font-medium text-review-text">${count}</span>` : ''}
-        ${status ? `<span class="font-medium ${statusBadgeClass(status)}">${escapeHtml(statusLabel(status).charAt(0))}</span>` : ''}
-      </span>
+      ${fileBadges(file)}
     `
-    button.addEventListener('click', () => openFile(file.id))
-    fileTreeEl.appendChild(button)
+    row.addEventListener('click', () => scrollToFile(file.id))
+    fileTreeEl.appendChild(row)
   }
 }
 
-function updateSidebarLayout() {
-  const collapsed = state.sidebarCollapsed
-  sidebarEl.style.width = collapsed ? '0px' : '280px'
-  sidebarEl.style.minWidth = collapsed ? '0px' : '280px'
-  sidebarEl.style.flexBasis = collapsed ? '0px' : '280px'
-  sidebarEl.style.borderRightWidth = collapsed ? '0px' : '1px'
-  sidebarEl.style.pointerEvents = collapsed ? 'none' : 'auto'
-  toggleSidebarButton.textContent = collapsed ? 'Show sidebar' : 'Hide sidebar'
-}
-
-function updateScopeButtons() {}
-
-function updateToggleButtons() {
-  const file = activeFile()
-  const reviewed = file ? isFileReviewed(file.id) : false
-  toggleReviewedButton.textContent = reviewed ? 'Reviewed' : 'Mark reviewed'
-  toggleReviewedButton.className = reviewed
-    ? 'cursor-pointer rounded-md border border-review-success/40 bg-review-success/15 px-3 py-1 text-xs font-medium text-review-success hover:bg-review-success/25'
-    : 'cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1 text-xs font-medium text-review-text hover:opacity-90'
-  toggleWrapButton.textContent = `Wrap lines: ${state.wrapLines ? 'on' : 'off'}`
-  toggleUnchangedButton.textContent = state.hideUnchanged
-    ? 'Show full file'
-    : 'Show changed areas only'
-  toggleUnchangedButton.style.display = activeFileShowsDiff() ? 'inline-flex' : 'none'
-  updateScopeButtons()
-  modeHintEl.textContent = scopeHint(state.currentScope)
-  submitButton.disabled = false
-}
-
-function applyEditorOptions() {
-  if (!diffEditor) return
-  diffEditor.updateOptions({
-    renderSideBySide: activeFileShowsSplitDiff(),
-    diffWordWrap: state.wrapLines ? 'on' : 'off',
-    hideUnchangedRegions: {
-      enabled: activeFileShowsDiff() && state.hideUnchanged,
-      contextLineCount: 4,
-      minimumLineCount: 2,
-      revealLineCount: 12,
-    },
-  })
-  diffEditor.getOriginalEditor().updateOptions({ wordWrap: state.wrapLines ? 'on' : 'off' })
-  diffEditor.getModifiedEditor().updateOptions({ wordWrap: state.wrapLines ? 'on' : 'off' })
-}
-
 function renderTree() {
-  ensureActiveFileForScope()
   fileTreeEl.innerHTML = ''
-  const scopedFiles = getScopedFiles()
   const visibleFiles = getFilteredFiles()
 
   if (visibleFiles.length === 0) {
-    const message = state.fileFilter.trim()
-      ? `No files match <span class="text-review-text">${escapeHtml(state.fileFilter.trim())}</span>.`
-      : `No files in <span class="text-review-text">${escapeHtml(scopeLabel(state.currentScope).toLowerCase())}</span>.`
-    fileTreeEl.innerHTML = `
-      <div class="px-3 py-4 text-sm text-review-muted">
-        ${message}
-      </div>
-    `
-  } else if (state.fileFilter.trim()) {
+    fileTreeEl.innerHTML = `<div class="px-3 py-4 text-sm text-review-muted">No files match <span class="text-review-text">${escapeHtml(state.fileFilter.trim())}</span>.</div>`
+  } else if (state.fileFilter.trim() !== '') {
     renderSearchResults(visibleFiles)
   } else {
     renderTreeNode(buildTree(visibleFiles), 0)
   }
 
-  sidebarTitleEl.textContent = scopeLabel(state.currentScope)
-  const comments = state.comments.length
-  const filteredSuffix = state.fileFilter.trim() ? ` • ${visibleFiles.length} shown` : ''
-  summaryEl.textContent = `${scopedFiles.length} file(s) • ${comments} comment(s)${state.overallComment ? ' • overall note' : ''}${filteredSuffix}`
-  updateToggleButtons()
-  updateSidebarLayout()
+  const reviewedCount = reviewData.files.filter(file => state.reviewedFiles[file.id]).length
+  summaryEl.textContent = [
+    `${reviewedCount}/${reviewData.files.length} reviewed`,
+    `${state.comments.length} comment(s)`,
+    state.overallComment !== '' ? 'overall note' : null,
+  ]
+    .filter(Boolean)
+    .join(' • ')
 }
 
-function showTextModal(options) {
+function updateToolbar() {
+  toggleStyleButton.textContent = viewOptions.diffStyle === 'split' ? 'Unified view' : 'Split view'
+  toggleWrapButton.textContent = `Wrap: ${viewOptions.overflow === 'wrap' ? 'on' : 'off'}`
+  toggleUnchangedButton.textContent = viewOptions.expandUnchanged ? 'Show changes only' : 'Show full files'
+  toggleSidebarButton.textContent = state.sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'
+  const width = state.sidebarCollapsed ? '0px' : '280px'
+  sidebarEl.style.width = width
+  sidebarEl.style.minWidth = width
+  sidebarEl.style.flexBasis = width
+  sidebarEl.style.borderRightWidth = state.sidebarCollapsed ? '0px' : '1px'
+}
+
+function applyViewOptions() {
+  codeView.setOptions({ ...viewOptions })
+  updateToolbar()
+}
+
+function showOverallCommentModal() {
   const backdrop = document.createElement('div')
   backdrop.className = 'review-modal-backdrop'
   backdrop.innerHTML = `
     <div class="review-modal-card">
-      <div class="mb-2 text-base font-semibold text-review-strong">${escapeHtml(options.title)}</div>
-      <div class="mb-4 text-sm text-review-muted">${escapeHtml(options.description)}</div>
-      <textarea id="review-modal-text" class="scrollbar-thin min-h-48 w-full resize-y rounded-md border border-review-border bg-review-bg px-3 py-2 text-sm text-review-text outline-none focus:border-review-accent focus:ring-1 focus:ring-review-accent">${escapeHtml(options.initialValue ?? '')}</textarea>
+      <div class="mb-2 text-base font-semibold text-review-strong">Overall review note</div>
+      <div class="mb-4 text-sm text-review-muted">This note goes above the inline comments in the generated prompt.</div>
+      <textarea class="scrollbar-thin min-h-48 w-full resize-y rounded-md border border-review-border bg-review-bg px-3 py-2 text-sm text-review-text outline-none focus:border-review-accent focus:ring-1 focus:ring-review-accent"></textarea>
       <div class="mt-4 flex justify-end gap-2">
-        <button id="review-modal-cancel" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-4 py-2 text-sm font-medium text-review-text hover:opacity-90">Cancel</button>
-        <button id="review-modal-save" class="cursor-pointer rounded-md border border-review-border bg-review-success px-4 py-2 text-sm font-medium text-white hover:opacity-90">${escapeHtml(options.saveLabel ?? 'Save')}</button>
+        <button data-action="cancel" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-4 py-2 text-sm font-medium text-review-text hover:opacity-90">Cancel</button>
+        <button data-action="save" class="cursor-pointer rounded-md border border-review-border bg-review-success px-4 py-2 text-sm font-medium text-white hover:opacity-90">Save note</button>
       </div>
     </div>
   `
   document.body.appendChild(backdrop)
-  const textarea = backdrop.querySelector('#review-modal-text')
+  const textarea = backdrop.querySelector('textarea')
+  textarea.value = state.overallComment
   const close = () => backdrop.remove()
-  backdrop.querySelector('#review-modal-cancel').addEventListener('click', close)
-  backdrop.querySelector('#review-modal-save').addEventListener('click', () => {
-    options.onSave(textarea.value.trim())
+  backdrop.querySelector('[data-action="cancel"]').addEventListener('click', close)
+  backdrop.querySelector('[data-action="save"]').addEventListener('click', () => {
+    state.overallComment = textarea.value.trim()
+    renderTree()
     close()
   })
   backdrop.addEventListener('click', event => {
@@ -623,562 +524,54 @@ function showTextModal(options) {
   textarea.focus()
 }
 
-function showOverallCommentModal() {
-  showTextModal({
-    title: 'Overall review note',
-    description: 'This note is prepended to the generated prompt above the inline comments.',
-    initialValue: state.overallComment,
-    saveLabel: 'Save note',
-    onSave: value => {
-      state.overallComment = value
-      renderTree()
-    },
-  })
-}
-
-function showFileCommentModal() {
-  const file = activeFile()
-  if (!file) return
-  showTextModal({
-    title: `File comment for ${getScopeDisplayPath(file, state.currentScope)}`,
-    description: `This comment applies to the whole file in ${scopeLabel(state.currentScope).toLowerCase()}.`,
-    initialValue: '',
-    saveLabel: 'Add comment',
-    onSave: value => {
-      if (!value) return
-      state.comments.push({
-        id: `${Date.now()}:${Math.random().toString(16).slice(2)}`,
-        fileId: file.id,
-        scope: state.currentScope,
-        side: 'file',
-        startLine: null,
-        endLine: null,
-        body: value,
-      })
-      submitButton.disabled = false
-      updateCommentsUi()
-    },
-  })
-}
-
-function layoutEditor() {
-  if (!diffEditor) return
-  const width = editorContainerEl.clientWidth
-  const height = editorContainerEl.clientHeight
-  if (width <= 0 || height <= 0) return
-  diffEditor.layout({ width, height })
-}
-
-function clearViewZones() {
-  if (!diffEditor || activeViewZones.length === 0) return
-  const original = diffEditor.getOriginalEditor()
-  const modified = diffEditor.getModifiedEditor()
-  original.changeViewZones(accessor => {
-    for (const zone of activeViewZones) if (zone.editor === original) accessor.removeZone(zone.id)
-  })
-  modified.changeViewZones(accessor => {
-    for (const zone of activeViewZones) if (zone.editor === modified) accessor.removeZone(zone.id)
-  })
-  activeViewZones = []
-}
-
-function renderCommentDom(comment, onDelete) {
-  const container = document.createElement('div')
-  container.className = 'view-zone-container'
-  const title =
-    comment.side === 'file'
-      ? `File comment • ${scopeLabel(comment.scope)}`
-      : `${comment.side === 'original' ? 'Original' : 'Modified'} line ${comment.startLine} • ${scopeLabel(comment.scope)}`
-
-  container.innerHTML = `
-    <div class="mb-2 flex items-center justify-between gap-3">
-      <div class="text-xs font-semibold text-review-text">${escapeHtml(title)}</div>
-      <button data-action="delete" class="cursor-pointer rounded-md border border-transparent bg-transparent px-2 py-1 text-xs font-medium text-review-muted hover:bg-review-error/10 hover:text-review-error">Delete</button>
-    </div>
-    <textarea data-comment-id="${escapeHtml(comment.id)}" class="scrollbar-thin min-h-[76px] w-full resize-y rounded-md border border-review-border bg-review-bg px-3 py-2 text-sm text-review-text outline-none focus:border-review-accent focus:ring-1 focus:ring-review-accent" placeholder="Leave a comment"></textarea>
-  `
-  const textarea = container.querySelector('textarea')
-  textarea.value = comment.body || ''
-  textarea.addEventListener('input', () => {
-    comment.body = textarea.value
-  })
-  container.querySelector("[data-action='delete']").addEventListener('click', onDelete)
-  if (!comment.body) setTimeout(() => textarea.focus(), 50)
-  return container
-}
-
-function canCommentOnSide(file, side) {
-  if (!file) return false
-  const comparison = activeComparison()
-  if (side === 'original') {
-    return comparison?.hasOriginal
-  }
-  return comparison?.hasModified
-}
-
-function isActiveFileReady() {
-  const file = activeFile()
-  if (!file) return false
-  const requestState = getRequestState(file.id, state.currentScope)
-  return requestState.contents != null && requestState.error == null
-}
-
-function syncViewZones() {
-  clearViewZones()
-  if (!(diffEditor && isActiveFileReady())) return
-  const file = activeFile()
-  if (!file) return
-
-  const originalEditor = diffEditor.getOriginalEditor()
-  const modifiedEditor = diffEditor.getModifiedEditor()
-  const inlineComments = state.comments.filter(
-    comment =>
-      comment.fileId === file.id && comment.scope === state.currentScope && comment.side !== 'file',
-  )
-
-  for (const item of inlineComments) {
-    const editor = item.side === 'original' ? originalEditor : modifiedEditor
-    const domNode = renderCommentDom(item, () => {
-      state.comments = state.comments.filter(comment => comment.id !== item.id)
-      updateCommentsUi()
-    })
-
-    editor.changeViewZones(accessor => {
-      const lineCount =
-        typeof item.body === 'string' && item.body.length > 0 ? item.body.split('\n').length : 1
-      const id = accessor.addZone({
-        afterLineNumber: item.startLine,
-        heightInPx: Math.max(150, lineCount * 22 + 86),
-        domNode,
-      })
-      activeViewZones.push({ id, editor })
-    })
-  }
-}
-
-function updateDecorations() {
-  if (!(diffEditor && monacoApi)) return
-  const file = activeFile()
-  const comments = file
-    ? state.comments.filter(
-        comment =>
-          comment.fileId === file.id &&
-          comment.scope === state.currentScope &&
-          comment.side !== 'file',
-      )
-    : []
-  const originalRanges = []
-  const modifiedRanges = []
-
-  for (const comment of comments) {
-    const range = {
-      range: new monacoApi.Range(comment.startLine, 1, comment.startLine, 1),
-      options: {
-        isWholeLine: true,
-        className:
-          comment.side === 'original'
-            ? 'review-comment-line-original'
-            : 'review-comment-line-modified',
-        glyphMarginClassName:
-          comment.side === 'original'
-            ? 'review-comment-glyph-original'
-            : 'review-comment-glyph-modified',
-      },
-    }
-    if (comment.side === 'original') originalRanges.push(range)
-    else modifiedRanges.push(range)
-  }
-
-  originalDecorations = diffEditor
-    .getOriginalEditor()
-    .deltaDecorations(originalDecorations, originalRanges)
-  modifiedDecorations = diffEditor
-    .getModifiedEditor()
-    .deltaDecorations(modifiedDecorations, modifiedRanges)
-}
-
-function renderFileComments() {
-  fileCommentsContainer.innerHTML = ''
-  const file = activeFile()
-  if (!file) {
-    fileCommentsContainer.className = 'hidden overflow-hidden px-0 py-0'
-    return
-  }
-
-  const fileComments = state.comments.filter(
-    comment =>
-      comment.fileId === file.id && comment.scope === state.currentScope && comment.side === 'file',
-  )
-
-  if (fileComments.length === 0) {
-    fileCommentsContainer.className = 'hidden overflow-hidden px-0 py-0'
-    return
-  }
-
-  fileCommentsContainer.className = 'border-b border-review-border bg-review-bg px-4 py-4 space-y-4'
-  for (const comment of fileComments) {
-    const dom = renderCommentDom(comment, () => {
-      state.comments = state.comments.filter(item => item.id !== comment.id)
-      updateCommentsUi()
-    })
-    dom.className = 'rounded-lg border border-review-border bg-review-panel p-4'
-    fileCommentsContainer.appendChild(dom)
-  }
-}
-
-function getPlaceholderContents(file, scope) {
-  const path = getScopeDisplayPath(file, scope)
-  const requestState = getRequestState(file.id, scope)
-  if (requestState.error) {
-    const body = `Failed to load ${path}\n\n${requestState.error}`
-    return { originalContent: body, modifiedContent: body }
-  }
-  const body = `Loading ${path}...`
-  return { originalContent: body, modifiedContent: body }
-}
-
-function getMountedContents(file, scope = state.currentScope) {
-  return getRequestState(file.id, scope).contents || getPlaceholderContents(file, scope)
-}
-
-function mountFile(options = {}) {
-  if (!(diffEditor && monacoApi)) return
-  const file = activeFile()
-  if (!file) {
-    currentFileLabelEl.textContent = 'No file selected'
-    clearViewZones()
-    if (originalModel) originalModel.dispose()
-    if (modifiedModel) modifiedModel.dispose()
-    originalModel = monacoApi.editor.createModel('', 'plaintext')
-    modifiedModel = monacoApi.editor.createModel('', 'plaintext')
-    diffEditor.setModel({ original: originalModel, modified: modifiedModel })
-    applyEditorOptions()
-    updateDecorations()
-    renderFileComments()
-    requestAnimationFrame(layoutEditor)
-    return
-  }
-
-  ensureFileLoaded(file.id, state.currentScope)
-
-  const preserveScroll = options.preserveScroll === true
-  const scrollState = preserveScroll ? captureScrollState() : null
-  const language = inferLanguage(getScopeFilePath(file) || file.path)
-  const contents = getMountedContents(file, state.currentScope)
-
-  clearViewZones()
-  currentFileLabelEl.textContent = getScopeDisplayPath(file, state.currentScope)
-
-  if (originalModel) originalModel.dispose()
-  if (modifiedModel) modifiedModel.dispose()
-
-  originalModel = monacoApi.editor.createModel(contents.originalContent, language)
-  modifiedModel = monacoApi.editor.createModel(contents.modifiedContent, language)
-
-  diffEditor.setModel({ original: originalModel, modified: modifiedModel })
-  applyEditorOptions()
-  syncViewZones()
-  updateDecorations()
-  renderFileComments()
-  requestAnimationFrame(() => {
-    layoutEditor()
-    if (options.restoreFileScroll) restoreFileScrollPosition()
-    if (options.preserveScroll) restoreScrollState(scrollState)
-    setTimeout(() => {
-      layoutEditor()
-      if (options.restoreFileScroll) restoreFileScrollPosition()
-      if (options.preserveScroll) restoreScrollState(scrollState)
-    }, 50)
-  })
-}
-
-function syncCommentBodiesFromDom() {
-  const textareas = document.querySelectorAll('textarea[data-comment-id]')
-  for (const textarea of textareas) {
-    const commentId = textarea.getAttribute('data-comment-id')
-    const comment = state.comments.find(item => item.id === commentId)
-    if (comment) comment.body = textarea.value
-  }
-}
-
-function updateCommentsUi() {
-  renderTree()
-  syncViewZones()
-  updateDecorations()
-  renderFileComments()
-}
-
-function renderAll(options = {}) {
-  renderTree()
-  submitButton.disabled = false
-  if (diffEditor && monacoApi) {
-    mountFile(options)
-    requestAnimationFrame(() => {
-      layoutEditor()
-      setTimeout(layoutEditor, 50)
-    })
-  } else {
-    renderFileComments()
-  }
-}
-
-function createGlyphHoverActions(editor, side) {
-  let hoverDecoration = []
-
-  function openDraftAtLine(line) {
-    const file = activeFile()
-    if (!(file && canCommentOnSide(file, side) && isActiveFileReady())) return
-    state.comments.push({
-      id: `${Date.now()}:${Math.random().toString(16).slice(2)}`,
-      fileId: file.id,
-      scope: state.currentScope,
-      side,
-      startLine: line,
-      endLine: line,
-      body: '',
-    })
-    updateCommentsUi()
-    editor.revealLineInCenter(line)
-  }
-
-  editor.onMouseMove(event => {
-    const file = activeFile()
-    if (!(file && canCommentOnSide(file, side) && isActiveFileReady())) {
-      hoverDecoration = editor.deltaDecorations(hoverDecoration, [])
-      return
-    }
-
-    const target = event.target
-    if (
-      target.type === monacoApi.editor.MouseTargetType.GUTTER_GLYPH_MARGIN ||
-      target.type === monacoApi.editor.MouseTargetType.GUTTER_LINE_NUMBERS
-    ) {
-      const line = target.position?.lineNumber
-      if (!line) return
-      hoverDecoration = editor.deltaDecorations(hoverDecoration, [
-        {
-          range: new monacoApi.Range(line, 1, line, 1),
-          options: { glyphMarginClassName: 'review-glyph-plus' },
-        },
-      ])
-    } else {
-      hoverDecoration = editor.deltaDecorations(hoverDecoration, [])
-    }
-  })
-
-  editor.onMouseLeave(() => {
-    hoverDecoration = editor.deltaDecorations(hoverDecoration, [])
-  })
-
-  editor.onMouseDown(event => {
-    const file = activeFile()
-    if (!(file && canCommentOnSide(file, side) && isActiveFileReady())) return
-
-    const target = event.target
-    if (
-      target.type === monacoApi.editor.MouseTargetType.GUTTER_GLYPH_MARGIN ||
-      target.type === monacoApi.editor.MouseTargetType.GUTTER_LINE_NUMBERS
-    ) {
-      const line = target.position?.lineNumber
-      if (!line) return
-      openDraftAtLine(line)
-    }
-  })
-}
-
-window.__reviewReceive = message => {
-  if (!message || typeof message !== 'object') return
-  const key = cacheKey(message.scope, message.fileId)
-
-  if (message.type === 'file-data') {
-    state.fileContents[key] = {
-      originalContent: message.originalContent,
-      modifiedContent: message.modifiedContent,
-    }
-    delete state.fileErrors[key]
-    delete state.pendingRequestIds[key]
-    renderTree()
-    if (state.activeFileId === message.fileId && state.currentScope === message.scope) {
-      mountFile({ restoreFileScroll: true })
-    }
-    return
-  }
-
-  if (message.type === 'file-error') {
-    state.fileErrors[key] = message.message || 'Unknown error'
-    delete state.pendingRequestIds[key]
-    renderTree()
-    if (state.activeFileId === message.fileId && state.currentScope === message.scope) {
-      mountFile({ preserveScroll: false })
-    }
-  }
-}
-
-function failReviewRenderer(message) {
-  editorContainerEl.innerHTML = `<div class="p-6 text-sm text-review-error">${escapeHtml(message)}</div>`
-  try {
-    window.glimpse?.send({ type: 'renderer-error', message })
-  } catch {}
-}
-
-function setupMonaco() {
-  try {
-    if (!window.require) {
-      failReviewRenderer('Failed to load Monaco loader.')
-      return
-    }
-
-    window.require.onError = error => {
-      failReviewRenderer(error?.message || 'Failed to load Monaco editor.')
-    }
-
-    window.require.config({
-      paths: {
-        vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.2/min/vs',
-      },
-    })
-
-    window.require(['vs/editor/editor.main'], () => {
-      try {
-        monacoApi = window.monaco
-        if (!monacoApi?.editor) {
-          failReviewRenderer('Monaco editor API is unavailable.')
-          return
-        }
-
-        monacoApi.editor.defineTheme('review-glimpse', {
-          base: reviewTheme.appearance === 'light' ? 'vs' : 'vs-dark',
-          inherit: true,
-          rules: [],
-          colors: {
-            'editor.background': reviewTheme.bg,
-            'editor.foreground': reviewTheme.text,
-            'editorLineNumber.foreground': reviewTheme.dim,
-            'editorLineNumber.activeForeground': reviewTheme.accent,
-            'editor.selectionBackground': `${reviewTheme.accent}33`,
-            'diffEditor.insertedTextBackground': `${reviewTheme.diffAdded}26`,
-            'diffEditor.removedTextBackground': `${reviewTheme.diffRemoved}26`,
-          },
-        })
-        monacoApi.editor.setTheme('review-glimpse')
-
-        diffEditor = monacoApi.editor.createDiffEditor(editorContainerEl, {
-          automaticLayout: true,
-          renderSideBySide: activeFileShowsSplitDiff(),
-          readOnly: true,
-          originalEditable: false,
-          minimap: {
-            enabled: true,
-            renderCharacters: false,
-            showSlider: 'always',
-            size: 'proportional',
-          },
-          renderOverviewRuler: true,
-          diffWordWrap: 'on',
-          scrollBeyondLastLine: false,
-          lineNumbersMinChars: 4,
-          glyphMargin: true,
-          folding: true,
-          lineDecorationsWidth: 10,
-          overviewRulerBorder: false,
-          wordWrap: 'on',
-        })
-
-        createGlyphHoverActions(diffEditor.getOriginalEditor(), 'original')
-        createGlyphHoverActions(diffEditor.getModifiedEditor(), 'modified')
-
-        if (typeof ResizeObserver !== 'undefined') {
-          editorResizeObserver = new ResizeObserver(() => {
-            layoutEditor()
-          })
-          editorResizeObserver.observe(editorContainerEl)
-        }
-
-        requestAnimationFrame(() => {
-          layoutEditor()
-          setTimeout(layoutEditor, 50)
-          setTimeout(layoutEditor, 150)
-        })
-
-        mountFile()
-      } catch (error) {
-        failReviewRenderer(error?.message || String(error))
-      }
-    })
-  } catch (error) {
-    failReviewRenderer(error?.message || String(error))
-  }
-}
-
-submitButton.addEventListener('click', () => {
-  syncCommentBodiesFromDom()
-  const payload = {
+function submitReview() {
+  window.glimpse.send({
     type: 'submit',
-    overallComment: state.overallComment.trim(),
+    overallComment: state.overallComment,
     comments: state.comments
       .map(comment => ({ ...comment, body: comment.body.trim() }))
-      .filter(comment => comment.body.length > 0),
-  }
-  window.glimpse.send(payload)
+      .filter(comment => comment.body !== ''),
+  })
   window.glimpse.close()
-})
+}
 
-cancelButton.addEventListener('click', () => {
+function moveActiveFile(delta) {
+  const files = getFilteredFiles()
+  const index = files.findIndex(file => file.id === state.activeFileId)
+  const next = files[Math.min(files.length - 1, Math.max(0, index + delta))]
+  if (next != null) scrollToFile(next.id)
+}
+
+submitButton.addEventListener('click', submitReview)
+el('cancel-button').addEventListener('click', () => {
   window.glimpse.send({ type: 'cancel' })
   window.glimpse.close()
 })
-
 undoButton.addEventListener('click', () => {
   window.glimpse.send({ type: 'undo' })
   window.glimpse.close()
 })
-
-overallCommentButton.addEventListener('click', () => {
-  showOverallCommentModal()
+el('overall-comment-button').addEventListener('click', showOverallCommentModal)
+toggleStyleButton.addEventListener('click', () => {
+  viewOptions.diffStyle = viewOptions.diffStyle === 'split' ? 'unified' : 'split'
+  applyViewOptions()
 })
-
-fileCommentButton.addEventListener('click', () => {
-  showFileCommentModal()
-})
-
-toggleUnchangedButton.addEventListener('click', () => {
-  state.hideUnchanged = !state.hideUnchanged
-  applyEditorOptions()
-  updateToggleButtons()
-  requestAnimationFrame(layoutEditor)
-})
-
 toggleWrapButton.addEventListener('click', () => {
-  state.wrapLines = !state.wrapLines
-  applyEditorOptions()
-  updateToggleButtons()
-  requestAnimationFrame(() => {
-    layoutEditor()
-    setTimeout(layoutEditor, 50)
-  })
+  viewOptions.overflow = viewOptions.overflow === 'wrap' ? 'scroll' : 'wrap'
+  applyViewOptions()
 })
-
-toggleReviewedButton.addEventListener('click', () => {
-  const file = activeFile()
-  if (!file) return
-  state.reviewedFiles[file.id] = !isFileReviewed(file.id)
-  renderTree()
+toggleUnchangedButton.addEventListener('click', () => {
+  viewOptions.expandUnchanged = !viewOptions.expandUnchanged
+  applyViewOptions()
 })
-
 toggleSidebarButton.addEventListener('click', () => {
   state.sidebarCollapsed = !state.sidebarCollapsed
-  updateSidebarLayout()
-  requestAnimationFrame(() => {
-    layoutEditor()
-    setTimeout(layoutEditor, 50)
-  })
+  updateToolbar()
 })
-
 sidebarSearchInputEl.addEventListener('input', () => {
   state.fileFilter = sidebarSearchInputEl.value
   renderTree()
 })
-
 sidebarSearchInputEl.addEventListener('keydown', event => {
   if (event.key === 'Escape') {
     sidebarSearchInputEl.value = ''
@@ -1187,8 +580,18 @@ sidebarSearchInputEl.addEventListener('keydown', event => {
   }
 })
 
-ensureActiveFileForScope()
+document.addEventListener('keydown', event => {
+  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+    event.preventDefault()
+    submitReview()
+    return
+  }
+  const tag = event.target.tagName
+  if (tag === 'TEXTAREA' || tag === 'INPUT') return
+  if (event.key === 'j') moveActiveFile(1)
+  if (event.key === 'k') moveActiveFile(-1)
+})
+
+updateToolbar()
 renderTree()
-renderFileComments()
-updateSidebarLayout()
-setupMonaco()
+requestAllFiles()

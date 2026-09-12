@@ -1,0 +1,23 @@
+@import "tailwindcss";
+@source "./index.html";
+@source "./annotate.html";
+@source "./app.js";
+@source "./annotate.js";
+
+@theme {
+  --color-review-bg: #0b1020;
+  --color-review-panel: #111827;
+  --color-review-hover: #1f2937;
+  --color-review-active: #243044;
+  --color-review-badge: #1e293b;
+  --color-review-border: #263244;
+  --color-review-text: #e5e7eb;
+  --color-review-strong: #f8fafc;
+  --color-review-muted: #9ca3af;
+  --color-review-accent: #60a5fa;
+  --color-review-success: #34d399;
+  --color-review-error: #fb7185;
+  --color-review-warning: #fbbf24;
+  --color-review-diff-added: #22c55e;
+  --color-review-diff-removed: #ef4444;
+}

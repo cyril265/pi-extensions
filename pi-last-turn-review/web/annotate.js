@@ -107,7 +107,7 @@ function truncate(value, max) {
   return value.length > max ? `${value.slice(0, max)}…` : value
 }
 
-function createCommentElement(comment, blockEl) {
+function createCommentElement(comment) {
   const container = document.createElement('div')
   container.className = 'annotate-comment'
   const lineLabel = comment.quote
@@ -127,23 +127,50 @@ function createCommentElement(comment, blockEl) {
     comment.body = textarea.value
     updateSummary()
   })
-  container.querySelector("[data-action='delete']").addEventListener('click', () => {
+  textarea.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && textarea.value.trim() === '') deleteButton.click()
+  })
+  const deleteButton = container.querySelector("[data-action='delete']")
+  deleteButton.addEventListener('click', () => {
     state.comments = state.comments.filter(item => item.id !== comment.id)
-    if (!state.comments.some(item => item.line === comment.line)) {
-      blockEl.classList.remove('has-comment')
+    if (!state.comments.some(item => item.anchor === comment.anchor)) {
+      comment.anchor.classList.remove('has-comment')
     }
+    container.closest('.annotate-comment-row')?.remove()
     container.remove()
     updateSummary()
   })
   return container
 }
 
-function addComment(blockEl, quote) {
-  const line = Number(blockEl.dataset.lineStart)
+function placeCard(anchor, card) {
+  if (anchor.tagName === 'LI') {
+    anchor.append(card)
+    return
+  }
+  let after = anchor
+  if (anchor.tagName === 'TR') {
+    const row = document.createElement('tr')
+    row.className = 'annotate-comment-row'
+    const cell = document.createElement('td')
+    cell.colSpan = anchor.children.length
+    cell.append(card)
+    row.append(cell)
+    card = row
+    while (after.nextElementSibling?.classList.contains('annotate-comment-row')) after = after.nextElementSibling
+  } else {
+    while (after.nextElementSibling?.classList.contains('annotate-comment')) after = after.nextElementSibling
+  }
+  after.after(card)
+}
+
+function addComment(anchor, line, endLine, quote) {
   if (quote == null) {
-    const existing = state.comments.find(comment => comment.line === line && comment.quote == null)
+    const existing = state.comments.find(
+      comment => comment.quote == null && comment.line === line && comment.endLine === endLine,
+    )
     if (existing) {
-      blockEl.nextElementSibling?.querySelector('textarea')?.focus()
+      existing.textarea.focus()
       return
     }
   }
@@ -151,21 +178,48 @@ function addComment(blockEl, quote) {
   const comment = {
     id: `${Date.now()}:${Math.random().toString(16).slice(2)}`,
     line,
-    endLine: Number(blockEl.dataset.lineEnd),
+    endLine,
     quote,
     body: '',
+    anchor,
   }
   state.comments.push(comment)
-  const commentEl = createCommentElement(comment, blockEl)
-  blockEl.classList.add('has-comment')
-  let anchor = blockEl
-  while (anchor.nextElementSibling?.classList.contains('annotate-comment')) {
-    anchor = anchor.nextElementSibling
-  }
-  anchor.after(commentEl)
+  const card = createCommentElement(comment)
+  comment.textarea = card.querySelector('textarea')
+  anchor.classList.add('has-comment')
+  placeCard(anchor, card)
   updateSummary()
-  setTimeout(() => commentEl.querySelector('textarea').focus(), 50)
+  setTimeout(() => comment.textarea.focus(), 50)
 }
+
+function anchorRange(anchor) {
+  return { line: Number(anchor.dataset.lineStart), endLine: Number(anchor.dataset.lineEnd) }
+}
+
+let hoveredAnchor = null
+
+contentEl.addEventListener('mouseover', event => {
+  if (event.target.closest('.annotate-comment')) return
+  const anchor = event.target.closest('.md-anchor')
+  if (!anchor) return
+  hoveredAnchor?.classList.remove('is-hover')
+  hoveredAnchor = anchor
+  anchor.classList.add('is-hover')
+})
+
+contentEl.addEventListener('mouseleave', () => {
+  hoveredAnchor?.classList.remove('is-hover')
+  hoveredAnchor = null
+})
+
+contentEl.addEventListener('click', event => {
+  if (event.target.closest('.annotate-comment, a')) return
+  if (!window.getSelection().isCollapsed) return
+  const anchor = event.target.closest('.md-anchor')
+  if (!anchor) return
+  const { line, endLine } = anchorRange(anchor)
+  addComment(anchor, line, endLine, null)
+})
 
 const selectionButton = document.createElement('button')
 selectionButton.className = 'selection-comment-button'
@@ -174,20 +228,34 @@ selectionButton.hidden = true
 document.body.appendChild(selectionButton)
 let pendingSelection = null
 
-function blockForSelection(selection) {
-  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null
-  const node = selection.getRangeAt(0).commonAncestorContainer
+function anchorForNode(node) {
   const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement
-  return element?.closest('.md-block') ?? null
+  if (element?.closest('.annotate-comment')) return null
+  return element?.closest('.md-anchor') ?? null
+}
+
+function selectionTarget(selection) {
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null
+  const range = selection.getRangeAt(0)
+  const start = anchorForNode(range.startContainer)
+  const end = anchorForNode(range.endContainer)
+  if (!start || !end) return null
+  const text = selection.toString().trim()
+  if (!text) return null
+  return {
+    anchor: end,
+    line: anchorRange(start).line,
+    endLine: anchorRange(end).endLine,
+    quote: start === end ? text : null,
+  }
 }
 
 document.addEventListener('mouseup', event => {
   if (event.target === selectionButton) return
   setTimeout(() => {
     const selection = window.getSelection()
-    const blockEl = blockForSelection(selection)
-    const quote = selection?.toString().trim()
-    if (!blockEl || !quote) {
+    const target = selectionTarget(selection)
+    if (!target) {
       selectionButton.hidden = true
       pendingSelection = null
       return
@@ -195,7 +263,7 @@ document.addEventListener('mouseup', event => {
     const rect = selection.getRangeAt(0).getBoundingClientRect()
     selectionButton.style.left = `${Math.max(8, Math.min(rect.right, window.innerWidth - 110))}px`
     selectionButton.style.top = `${Math.min(rect.bottom + 8, window.innerHeight - 40)}px`
-    pendingSelection = { blockEl, quote }
+    pendingSelection = target
     selectionButton.hidden = false
   })
 })
@@ -203,11 +271,11 @@ document.addEventListener('mouseup', event => {
 selectionButton.addEventListener('mousedown', event => event.preventDefault())
 selectionButton.addEventListener('click', () => {
   if (!pendingSelection) return
-  const { blockEl, quote } = pendingSelection
+  const { anchor, line, endLine, quote } = pendingSelection
   pendingSelection = null
   selectionButton.hidden = true
   window.getSelection()?.removeAllRanges()
-  addComment(blockEl, quote)
+  addComment(anchor, line, endLine, quote)
 })
 
 document.addEventListener(
@@ -218,48 +286,34 @@ document.addEventListener(
   true,
 )
 
-function groupTopLevelBlocks(tokens) {
-  const blocks = []
-  let index = 0
-  while (index < tokens.length) {
-    const start = index
-    if (tokens[index].nesting === 1) {
-      let depth = 0
-      do {
-        depth += tokens[index].nesting
-        index++
-      } while (depth > 0 && index < tokens.length)
-    } else {
-      index++
-    }
-    blocks.push(tokens.slice(start, index))
+const ANCHOR_TOKENS = new Set(['heading_open', 'paragraph_open', 'list_item_open', 'tr_open', 'hr'])
+
+function markAnchors(mdState) {
+  for (const token of mdState.tokens) {
+    if (!token.map || !ANCHOR_TOKENS.has(token.type)) continue
+    token.attrJoin('class', 'md-anchor')
+    token.attrSet('data-line-start', String(token.map[0] + 1))
+    token.attrSet('data-line-end', String(token.map[1]))
   }
-  return blocks
+}
+
+function renderCodeLines(token, firstLine) {
+  const lines = token.content === '' ? [] : token.content.replace(/\n$/, '').split('\n')
+  const html = lines
+    .map((text, index) => {
+      const line = firstLine + index
+      return `<div class="md-line md-anchor" data-line-start="${line}" data-line-end="${line}">${escapeHtml(text)}</div>`
+    })
+    .join('')
+  return `<div class="md-code">${html}</div>`
 }
 
 function renderMarkdown() {
-  if (!window.markdownit) throw new Error('markdown-it unavailable.')
-  const md = window.markdownit({ linkify: true })
-  const blocks = groupTopLevelBlocks(md.parse(annotateData.text || '', {}))
-
-  for (const blockTokens of blocks) {
-    const map = blockTokens[0].map
-    if (!map) continue
-    const wrapper = document.createElement('div')
-    wrapper.className = 'md-block'
-    wrapper.dataset.lineStart = String(map[0] + 1)
-    wrapper.dataset.lineEnd = String(map[1])
-    wrapper.innerHTML = md.renderer.render(blockTokens, md.options, {})
-
-    const addButton = document.createElement('button')
-    addButton.className = 'md-block-add'
-    addButton.title = 'Add comment'
-    addButton.textContent = '+'
-    addButton.addEventListener('click', () => addComment(wrapper, null))
-    wrapper.prepend(addButton)
-
-    contentEl.appendChild(wrapper)
-  }
+  const md = window.markdownit.default({ linkify: true })
+  md.core.ruler.push('anchors', markAnchors)
+  md.renderer.rules.fence = (tokens, index) => renderCodeLines(tokens[index], tokens[index].map[0] + 2)
+  md.renderer.rules.code_block = (tokens, index) => renderCodeLines(tokens[index], tokens[index].map[0] + 1)
+  contentEl.insertAdjacentHTML('afterbegin', md.render(annotateData.text || ''))
 }
 
 function showTextModal(options) {
@@ -302,7 +356,7 @@ submitButton.addEventListener('click', () => {
     type: 'submit',
     overallComment: state.overallComment.trim(),
     comments: state.comments
-      .map(comment => ({ ...comment, body: comment.body.trim() }))
+      .map(({ anchor, textarea, ...comment }) => ({ ...comment, body: comment.body.trim() }))
       .filter(comment => comment.body.length > 0),
   })
   window.glimpse.close()

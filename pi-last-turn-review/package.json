@@ -11,13 +11,15 @@
   "files": [
     "src/",
     "web/",
+    "scripts/",
     "types/",
     "tsconfig.json",
     "plan.md"
   ],
   "type": "module",
   "scripts": {
-    "check": "tsgo --noEmit"
+    "check": "tsgo --noEmit",
+    "build:vendor": "node scripts/build-vendor.mjs"
   },
   "pi": {
     "extensions": [
@@ -32,8 +34,13 @@
     "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
+    "@pierre/diffs": "^1.4.2",
+    "@tailwindcss/cli": "^4.3.3",
     "@types/node": "^26.1.1",
     "@typescript/native-preview": "^7.0.0-dev.20260313.1",
+    "esbuild": "^0.28.2",
+    "markdown-it": "^14.1.0",
+    "tailwindcss": "^4.3.3",
     "typescript": "^5.9.2"
   }
 }

@@ -649,7 +649,7 @@ function createAnnotateWindowData(text: string, theme: ReviewTheme): AnnotateWin
     title: 'Annotate turn',
     sourceLabel: 'latest response',
     sourceHint:
-      'Annotate the final assistant response from the latest agent turn. Hover a block and click + to comment on it, or select text to comment on a passage.',
+      'Annotate the final assistant response from the latest agent turn. Click a paragraph, list item, table row or code line to comment on it, or select text to comment on a passage.',
     text,
     theme,
   }
@@ -838,7 +838,7 @@ function createReviewWindowData(
       mode,
       scopeLabel: 'turn diff',
       scopeHint:
-        'Review the latest agent turn diff. Hover or click line numbers in the gutter to add an inline comment.',
+        'Review the latest agent turn diff. Click a line number to comment, drag across line numbers for a range.',
       theme,
       files,
     }
@@ -850,7 +850,7 @@ function createReviewWindowData(
     mode,
     scopeLabel: 'git diff',
     scopeHint:
-      'Review current Git working-tree changes against HEAD. Hover or click line numbers in the gutter to add an inline comment.',
+      'Review current Git working-tree changes against HEAD. Click a line number to comment, drag across line numbers for a range.',
     theme,
     files,
   }
