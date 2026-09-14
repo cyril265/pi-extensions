@@ -2,6 +2,39 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-09-13
+
+### General
+
+- `AGENTS.md` now requires each pushed `HEAD` to be synced to the `ai-lab` repository, with the source hash in the sync commit message.
+- Documentation audit. Root `README.md` now lists `remote-handoff`, `pi-enclave`, `pi-openai-compaction`, and `pi-last-turn-review` in the packages table, and the single-file rows name their commands and behavior (`/branch-stats`, Shift+Escape, `activate-mcp-aliases` requirements). Corrected the `simple-subagent`, `footer`, `presets`, and `provider-system-prompt-append` rows.
+- `agent/settings.json`: added `astra-reasoning`, `rm-guard`, `branch-stats.ts`; removed `activate-mcp-aliases.ts` (needs `pi-claude-code-use`), the unknown `powerline` key, and the default-valued `compaction.enabled`.
+- New READMEs for `presets`, `session-search`, and `herdr-tab-name`.
+- Install sections in `footer`, `pi-enclave`, `pi-openai-compaction`, `cwd`, and `remote-handoff` pointed at other npm packages, upstream repos, or wrong paths; they now describe installing from this checkout. `pi-enclave` documents the required `npm run build`. `pi-audit` gained an install section and names the hardcoded audit model.
+- Corrected claims in `warp-notifications` (no `auggie` shim; documents the Warp env gate and emitted events), `piq` (`respond_command` is a local extension; pinned models, stdin and interactive modes, `PIQ_COMMAND_RESPONSE_FILE`), `astra-reasoning` (eligibility is by `api` and id suffix), and `footer` (cache-write estimate scope). `tools/worktree` documents `clean-generated-artifacts`, Python 3, and the `ls`/`rm` aliases.
+
+### pi-last-turn-review
+
+- `package.json` name is now `pi-last-turn-review` (was the upstream `pi-turn-diff`); removed the nonexistent `plan.md` from `files`.
+
+### rm-guard
+
+- New package. A `tool_call` hook prepends `bin/` to `PATH` for every `bash` command; `bin/rm` refuses operands outside the session cwd, the user temp dir, or `/tmp` after shell expansion, then runs `/bin/rm`. Motivated by the GPT-5.6 `rm -rf "$VAR"/*` and `rm -rf "$HOME"` home-directory deletions.
+- Tests run the real wrapper through `/bin/bash` in a temp tree, and `rm -rf "$UNSET"/*` on bash 3.2 inside a `bash:3.2` container.
+- Blocked `rm` calls now ask the user when pi has a UI. `bin/rm` writes the blocked resolved paths (NUL-separated) to a request file in a per-command `PI_RM_ASK_DIR`; the extension watches it, shows `ctx.ui.confirm` with the paths, and writes `allow` or `deny`. Deny, Escape, or turn abort exits 3 with `The user declined this deletion.`; without a UI the call exits 3 as before. Dialogs are serialized (pi replaces an open selector without resolving it). Ask dirs are removed on `tool_result` and swept on `turn_end`, since a `tool_call` block by another hook skips `tool_result`; a waiting `rm` exits 3 when its ask dir is gone. The prefix always sets `PI_RM_ASK_DIR` (empty without UI) so a nested headless pi does not inherit the parent's prompt channel. `bin/rm` now reports every blocked operand instead of the first. README first line no longer claims to stop all deletions outside the project.
+
+### prewalk
+
+- Works again on the current `simple-subagent`. The extension imported the removed `executeSubagents` and `renderSubagentDetails` and failed to load.
+- The executor fork now runs through a prewalk-owned `JobRegistry` and `startJob`. `dispatch_executor` no longer blocks the turn; the report arrives as a follow-up custom message when the fork settles.
+- Tests: `extension.integration.test.ts` replaces the fake-`pi` unit test and drives a real persisted session, the `/prewalk` command, the edit nudge, a real executor fork, and session resume.
+- Dev dependencies bumped to pi 0.84.2 to match `simple-subagent`.
+
+### simple-subagent
+
+- `index.ts` exports `JobRegistry` and `renderSubagentWidget` for prewalk; `renderLiveCompact` is no longer exported (no importer).
+- A child whose last assistant message has `stopReason` `error` or `aborted` is now reported as failed (`exit 1`, `isError: true`) with the provider's error message as its result. Before, pi exited 0 on a provider error and the agent showed as done with "(no output)". The Herdr path already did this; both paths share `getFinalError`.
+
 ## 2026-09-12
 
 ### simple-subagent

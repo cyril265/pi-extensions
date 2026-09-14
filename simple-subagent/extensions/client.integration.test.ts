@@ -187,6 +187,14 @@ test('run waits for all agents and returns the settled job without tools or prom
   assert.equal(joined.text, result.text)
 })
 
+test('a provider error in the child marks the agent failed even though pi exits 0', { timeout: 30_000 }, async () => {
+  const result = await run([agent('rejected', { overrideModel: hangingModel, sessionKey: 'rejected-session' })])
+  assert.equal(result.isError, true)
+  assert.equal(result.agents[0].status, 'failed')
+  assert.match(result.text, /exit 1/)
+  assert.match(result.text, /offline test rejects this request/)
+})
+
 test('invalid requests are rejected before any agent starts and leave no reservation', { timeout: 30_000 }, async () => {
   const valid = agent('valid', { sessionKey: 'valid-session' })
   await rejects([valid, { ...valid, thinking: 'invalid' }], /agents\/1\/thinking/)

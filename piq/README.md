@@ -4,9 +4,11 @@ Small one-shot wrappers around `pi`.
 
 ## Commands
 
-- `pil <prompt>` — low reasoning, normal answer
-- `pim <prompt>` — medium reasoning, normal answer
-- `pic <prompt>` — GPT-5.6 Sol with medium reasoning, command mode
+- `pil <prompt>` — `openai-codex/gpt-5.5:low`, normal answer
+- `pim <prompt>` — `openai-codex/gpt-5.5:medium`, normal answer
+- `pic <prompt>` — `openai-codex/gpt-5.6-sol:medium`, command mode
+
+All three also read piped stdin. With arguments and piped text, both are sent. With no arguments on a TTY, they ask for the prompt interactively.
 
 ## Command Mode
 
@@ -37,9 +39,11 @@ on `PATH`. Rebuild it any time with `npm run build`.
 ## Notes
 
 - Auto-discovered pi extensions are disabled.
-- `pic` enables only the built-in `respond_command` extension/tool.
+- `pic` runs with `--no-builtin-tools`, loads `extensions/respond-command.ts`, and exposes only the `respond_command` tool.
 - `pil`, `pim`, and `pic` run with `pi --no-session`, so they do not create or resume sessions.
 - `pic` fills the terminal input via the `TIOCSTI` ioctl (compiled helper, no
   python dependency). Works on macOS and BSD. On recent Linux kernels `TIOCSTI`
   is gated behind the `dev.tty.legacy_tiocsti` sysctl (off by default); when it
   is disabled the injection fails and `pic` reports the error.
+- `PIQ_COMMAND_RESPONSE_FILE` overrides the file `respond_command` writes to. The
+  default is `<tmpdir>/piq/command-response/<pid>.json`.

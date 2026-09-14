@@ -39,7 +39,7 @@ When the remote host has no matching Herdr release, Remote Handoff downloads the
 ## Install
 
 ```bash
-pi install /absolute/path/to/pi-remote-handoff
+pi install /path/to/pi-extensions/remote-handoff
 ```
 
 Open a persisted Pi conversation in the project, then run:
@@ -184,6 +184,8 @@ Remote Pi is not sandboxed. Use only SSH hosts and Pi configuration that you tru
 npm install
 npm run build
 ```
+
+`npm run build` is `tsc --noEmit`, so it only typechecks and produces no output files.
 
 Run the full real end-to-end verification after lifecycle changes:
 

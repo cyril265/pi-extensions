@@ -159,8 +159,7 @@ The projection ends when the server exits or the companion plugin is disabled or
 
 ## Isolated agent fields
 
-- uses caller model
-- `overrideModel`: optional per-agent model override. Configured aliases resolve through `modelAliases`; `provider/model` selects an explicit model. Unknown bare aliases fail immediately. Runtime details use `suppliedModel` for the provided value and `effectiveModel` for the resolved model.
+- `overrideModel`: optional per-agent model override; without it the caller's model is used. Configured aliases resolve through `modelAliases`; `provider/model` selects an explicit model. Unknown bare aliases fail immediately. Runtime details use `suppliedModel` for the provided value and `effectiveModel` for the resolved model.
 - `thinking`: `low`, `medium`, `high`, `xhigh`, or `max`
 - `prompt`: prompt sent to child pi process
 - result output reports the final context used without exposing aggregate usage or cost

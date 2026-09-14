@@ -37,11 +37,13 @@ Configure the executor once (stored in `~/.pi/agent/prewalk.json`):
 4. verifies the executor's report (`git diff`, tests) when it returns.
 
 The executor runs via `simple-subagent` as a fork of the current session on
-the configured cheap model. It inherits the whole trajectory; the prewalk
-template, dispatch, nudge, and result messages are filtered from its context
-(only inside the child process — the parent transcript is never touched).
-Executor sessions are resumable: re-dispatch with the `sessionKey` from the
-report.
+the configured cheap model. The dispatch returns at once; the session stays
+usable while the executor runs, and the report arrives as a follow-up message
+that triggers the verification turn. The executor inherits the whole
+trajectory; the prewalk template, dispatch, nudge, and result messages are
+filtered from its context (only inside the child process — the parent
+transcript is never touched). Executor sessions are resumable: re-dispatch
+with the `sessionKey` from the report.
 
 ## Notes
 
@@ -49,8 +51,8 @@ report.
   restored when resuming a session where Prewalk was already started.
   `pi-claude-code-use` discovers it before the next model request and aliases
   it to `mcp__prewalk__dispatch_executor` for Anthropic OAuth.
-- Prompt-cache inheritance is intentionally skipped for the fork (different
-  model, cache would miss anyway).
+- Prewalk keeps its own job registry. `cancelSubAgents` and `/subagents` from
+  `simple-subagent` do not see the executor job; one dispatch runs at a time.
 - Requires `simple-subagent` as a sibling directory (imported directly).
 
 ```bash

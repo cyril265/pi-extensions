@@ -8,8 +8,9 @@ Custom [pi](https://github.com/mariozechner/pi) footer HUD with:
 - provider and model
 - thinking level
 - adaptive idle timer showing time since the agent settled
-- total cost for the current session, including an upper-bound cache-write estimate for
-  `openai-codex-*` GPT-5.6 providers when Codex omits write-token usage
+- total cost for the current session, including an upper-bound cache-write estimate for numbered
+  `openai-codex-<n>` subscription providers on `gpt-5.6-luna`, `gpt-5.6-terra`, and `gpt-5.6-sol`,
+  counted only for assistant messages that report zero cache-write tokens
 - Anthropic and Codex quotas updated immediately from provider response headers, with direct
   usage-API refreshes preserving the provider-specific quota windows from `pi-sub-bar`
 - persisted quota cache restored without a startup request, automatic refresh every 180 seconds,
@@ -17,15 +18,15 @@ Custom [pi](https://github.com/mariozechner/pi) footer HUD with:
 
 ## Install
 
-```bash
-pi install npm:pi-hud-footer
+Add this directory as a Pi package:
+
+```json
+{
+  "packages": ["/path/to/pi-extensions/footer"]
+}
 ```
 
-Pinned install:
-
-```bash
-pi install npm:pi-hud-footer@0.1.0
-```
+Then run `/reload` in Pi.
 
 ## Package
 

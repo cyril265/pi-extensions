@@ -6,6 +6,7 @@ import { writePrivateFile } from './private-files.ts'
 import {
   cloneToolArgs,
   dedupeToolDisplayItems,
+  getFinalError,
   getFinalOutput,
   getToolDisplayItems,
 } from './tool-events.ts'
@@ -55,14 +56,11 @@ function getRunResult(messages: Message[], liveTools: ToolDisplayItem[]): Subage
 
   if (!firstTurnUsage) throw new Error('Subagent produced no assistant usage')
   const finalOutput = getFinalOutput(messages).trim()
-  const lastAssistant = [...messages].reverse().find(message => message.role === 'assistant')
-  const failed =
-    lastAssistant?.role === 'assistant' &&
-    (lastAssistant.stopReason === 'error' || lastAssistant.stopReason === 'aborted')
+  const failure = getFinalError(messages)
 
   return {
-    text: finalOutput || '(no output)',
-    exitCode: failed ? 1 : 0,
+    text: finalOutput || failure || '(no output)',
+    exitCode: failure ? 1 : 0,
     tools: dedupeToolDisplayItems([...liveTools, ...getToolDisplayItems(messages)]),
     usage,
     contextTokens,

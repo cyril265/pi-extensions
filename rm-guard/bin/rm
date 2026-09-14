@@ -1,0 +1,126 @@
+#!/bin/bash
+# Refuses to delete anything outside the PI_RM_ALLOW directories, then runs /bin/rm.
+# With PI_RM_ASK_DIR set, blocked operands are sent to the pi extension, which asks the user.
+fail_config() {
+    printf 'pi-rm: guard configuration error: %s\n' "$1" >&2
+    exit 64
+}
+[ -n "${PI_RM_ALLOW-}" ] || fail_config 'PI_RM_ALLOW is not set'
+CDPATH=
+builtin cd -P -- . 2>/dev/null || fail_config 'cannot resolve the current directory'
+ORIGINAL_CWD=$PWD
+canonical_dir() {
+    builtin cd -P -- "$1" 2>/dev/null || return 1
+    CANONICAL_DIR=$PWD
+    builtin cd -P -- "$ORIGINAL_CWD" 2>/dev/null ||
+        fail_config 'the original working directory disappeared'
+}
+IFS=: read -r -a ALLOW_ENTRIES <<< "$PI_RM_ALLOW"
+ALLOWED=()
+for ENTRY in "${ALLOW_ENTRIES[@]}"; do
+    canonical_dir "$ENTRY" || fail_config "allowed directory is not accessible: $ENTRY"
+    [ "$CANONICAL_DIR" != / ] || fail_config 'an allowed directory must not be /'
+    ALLOWED+=("$CANONICAL_DIR")
+done
+# A plain final component is checked by its parent, so `rm link` removes only the link.
+# A trailing slash is resolved through the link, because /bin/rm follows it there.
+# `.` and `..` are resolved fully as well; /bin/rm rejects them, this only keeps the check strict.
+canonical_operand() {
+    OPERAND=$1
+    case "$OPERAND" in
+        */)
+            canonical_dir "$OPERAND" || return 1
+            CANONICAL_OPERAND=$CANONICAL_DIR
+            return 0
+            ;;
+    esac
+    case "$OPERAND" in
+        */*)
+            PARENT=${OPERAND%/*}
+            NAME=${OPERAND##*/}
+            [ -n "$PARENT" ] || PARENT=/
+            ;;
+        *)
+            PARENT=.
+            NAME=$OPERAND
+            ;;
+    esac
+    case "$NAME" in
+        .|..)
+            canonical_dir "$OPERAND" || return 1
+            CANONICAL_OPERAND=$CANONICAL_DIR
+            ;;
+        *)
+            canonical_dir "$PARENT" || return 1
+            if [ "$CANONICAL_DIR" = / ]; then
+                CANONICAL_OPERAND=/$NAME
+            else
+                CANONICAL_OPERAND=$CANONICAL_DIR/$NAME
+            fi
+            ;;
+    esac
+}
+is_allowed() {
+    for BASE in "${ALLOWED[@]}"; do
+        [ "$1" != "$BASE" ] || return 1
+        case "$BASE" in
+            "$1"/*) return 1 ;;
+        esac
+    done
+    for BASE in "${ALLOWED[@]}"; do
+        case "$1" in
+            "$BASE"/*) return 0 ;;
+        esac
+    done
+    return 1
+}
+BLOCKED_OPERANDS=()
+BLOCKED_PATHS=()
+blocked() {
+    printf 'pi-rm: blocked deletion outside the allowed directories\n' >&2
+    I=0
+    while [ "$I" -lt "${#BLOCKED_PATHS[@]}" ]; do
+        printf 'operand: %q\n' "${BLOCKED_OPERANDS[$I]}" >&2
+        printf 'resolved path: %q\n' "${BLOCKED_PATHS[$I]}" >&2
+        I=$((I + 1))
+    done
+    printf 'allowed directory: %q\n' "${ALLOWED[@]}" >&2
+    printf 'No files were deleted. %s Do not bypass this guard with /bin/rm.\n' "$1" >&2
+    exit 3
+}
+ask_user() {
+    REQUEST=$PI_RM_ASK_DIR/$$.request
+    printf '%s\0' "${BLOCKED_PATHS[@]}" > "$REQUEST.tmp" && mv "$REQUEST.tmp" "$REQUEST" ||
+        fail_config "cannot write to $PI_RM_ASK_DIR"
+    REPLY_FILE=$PI_RM_ASK_DIR/$$.reply
+    while [ ! -e "$REPLY_FILE" ]; do
+        [ -d "$PI_RM_ASK_DIR" ] || return 1
+        sleep 0.1
+    done
+    [ "$(cat "$REPLY_FILE")" = allow ]
+}
+PARSING_OPTIONS=1
+for ARG do
+    if [ "$PARSING_OPTIONS" = 1 ]; then
+        case "$ARG" in
+            --) PARSING_OPTIONS=0; continue ;;
+            -?*) continue ;;
+            *) PARSING_OPTIONS=0 ;;
+        esac
+    fi
+    if [ ! -e "$ARG" ] && [ ! -L "$ARG" ]; then
+        continue
+    fi
+    if canonical_operand "$ARG"; then
+        is_allowed "$CANONICAL_OPERAND" && continue
+    else
+        CANONICAL_OPERAND='<cannot resolve>'
+    fi
+    BLOCKED_OPERANDS+=("$ARG")
+    BLOCKED_PATHS+=("$CANONICAL_OPERAND")
+done
+if [ "${#BLOCKED_PATHS[@]}" -gt 0 ]; then
+    [ -n "${PI_RM_ASK_DIR-}" ] || blocked 'Rewrite the command so every rm operand is inside an allowed directory, or ask the user to run it.'
+    ask_user || blocked 'The user declined this deletion.'
+fi
+exec /bin/rm "$@"

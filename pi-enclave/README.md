@@ -6,9 +6,21 @@ This local fork targets `@earendil-works/pi-coding-agent` and combines enclave e
 
 VM-isolated enclave for [pi](https://pi.dev). Runs all tools inside a [Gondolin](https://github.com/earendil-works/gondolin) micro-VM so secrets never enter the agent's execution environment.
 
+Build this fork, then add its directory as a Pi package:
+
 ```bash
-pi install npm:pi-enclave
+cd /path/to/pi-extensions/pi-enclave
+npm install
+npm run build
 ```
+
+```json
+{
+  "packages": ["/path/to/pi-extensions/pi-enclave"]
+}
+```
+
+The build step is required because `pi.extensions` in `package.json` points at `dist/index.js`, and `dist/` is gitignored.
 
 Requires QEMU: `brew install qemu` (macOS) or `sudo apt install qemu-system-x86` / `sudo apt install qemu-system-aarch64` (Linux, matching your host architecture).
 

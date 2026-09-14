@@ -1,5 +1,5 @@
 {
-  "name": "pi-turn-diff",
+  "name": "pi-last-turn-review",
   "version": "0.1.0",
   "license": "MIT",
   "engines": {
@@ -13,8 +13,7 @@
     "web/",
     "scripts/",
     "types/",
-    "tsconfig.json",
-    "plan.md"
+    "tsconfig.json"
   ],
   "type": "module",
   "scripts": {

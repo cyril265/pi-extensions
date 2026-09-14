@@ -19,6 +19,18 @@ ln -s "$(pwd)/../warp-notifications" ~/.pi/agent/extensions/warp-notifications
 
 Then restart Pi or run `/reload`.
 
+## Behavior
+
+Events are emitted only when `TERM_PROGRAM=WarpTerminal` and `WARP_CLI_AGENT_PROTOCOL_VERSION` is set. The extension is disabled when `PI_SIMPLE_SUBAGENT=1`.
+
+It emits these events:
+
+- `session_start` on the first event of a session
+- `prompt_submit` when a turn starts
+- `stop` when a turn ends and from `/warpnotify-test`
+- `question_asked` for a matched sandbox prompt
+- `permission_replied` after that dialog closes
+
 ## Test
 
 In Pi:
@@ -33,4 +45,4 @@ After the dialog closes, the extension emits `permission_replied` to clear the b
 
 ## Note
 
-Warp source currently defines `CLIAgent::Pi` but does not enable a Pi listener in `cli_agent_sessions/listener/mod.rs`, so this extension uses Warp's supported `auggie` structured-agent path as a compatibility shim. Inbox may label events as Auggie until Warp enables Pi there.
+Warp source currently defines `CLIAgent::Pi` but does not enable a Pi listener in `cli_agent_sessions/listener/mod.rs`. Every payload is sent with `agent: "pi"`, so inbox entries stay Pi entries once Warp enables that listener.

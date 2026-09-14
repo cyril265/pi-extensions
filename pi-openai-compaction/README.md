@@ -32,18 +32,18 @@ The extension uses two hooks:
 
 ## Install
 
-From a checkout of this repo:
+Add this directory as a Pi package:
 
-```bash
-git clone https://github.com/jordyvandomselaar/pi-codex-compaction.git
-cd pi-codex-compaction
-pi install .
+```json
+{
+  "packages": ["/path/to/pi-extensions/pi-openai-compaction"]
+}
 ```
 
-Try without installing from the repo root:
+Try it without installing:
 
 ```bash
-pi -e .
+pi -e /path/to/pi-extensions/pi-openai-compaction
 ```
 
 This extension targets the current `@earendil-works/*` Pi packages and relies on Pi's `modelRegistry.getApiKeyAndHeaders(model)` API, so older Pi versions are not supported.

@@ -5,6 +5,7 @@ import { getPackageDir } from '@earendil-works/pi-coding-agent'
 import {
   dedupeToolDisplayItems,
   getEventToolDisplayItem,
+  getFinalError,
   getFinalOutput,
   getToolDisplayItems,
 } from './tool-events.ts'
@@ -182,10 +183,11 @@ export async function runSubAgent(
   if (!firstTurnUsage) {
     throw new Error(result.stderr.trim() || 'Subagent produced no assistant usage')
   }
+  const failure = getFinalError(messages)
 
   return {
-    text: finalOutput || result.stderr.trim() || '(no output)',
-    exitCode: result.exitCode,
+    text: finalOutput || failure || result.stderr.trim() || '(no output)',
+    exitCode: failure ? 1 : result.exitCode,
     tools: dedupeToolDisplayItems([...tools, ...getToolDisplayItems(messages)]),
     usage,
     contextTokens,

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import * as path from 'node:path'
 import {
   type ExtensionAPI,
@@ -7,7 +8,7 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { Text } from '@earendil-works/pi-tui'
 import { Type } from 'typebox'
-import { executeSubagents, renderSubagentDetails } from '../simple-subagent/index.ts'
+import { JobRegistry, renderSubagentWidget, startJob } from '../simple-subagent/index.ts'
 import { loadConfig, type PrewalkConfig, saveConfig, THINKING_LEVELS } from './config.ts'
 import {
   buildExecutorPrompt,
@@ -85,8 +86,37 @@ export default function (pi: ExtensionAPI) {
   }
 
   let pendingDispatch: PendingDispatch | undefined
-  let dispatching = false
   let editGateArmed = false
+  let jobContext: ExtensionContext | undefined
+  const jobs = new JobRegistry({
+    onProgress(job, details) {
+      if (jobContext?.mode !== 'tui') return
+      jobContext.ui.setWidget(
+        DISPATCH_PROGRESS_WIDGET,
+        (_tui, theme) =>
+          new Text(
+            renderSubagentWidget(details, theme, DISPATCH_TOOL_NAME, job.id, job.startedAt),
+            0,
+            0,
+          ),
+      )
+    },
+    onSettled() {
+      if (jobContext?.mode === 'tui') jobContext.ui.setWidget(DISPATCH_PROGRESS_WIDGET, undefined)
+      jobContext = undefined
+    },
+    onPush(_job, result) {
+      pi.sendMessage(
+        {
+          customType: RESULT_MESSAGE_TYPE,
+          content: buildVerifyMessage(result.text, result.isError),
+          display: true,
+        },
+        { deliverAs: 'followUp', triggerTurn: true },
+      )
+    },
+  })
+  const dispatchInFlight = () => pendingDispatch !== undefined || jobs.listRunning().length > 0
 
   const dispatchParameters = Type.Object({
     instructions: Type.Optional(
@@ -116,11 +146,13 @@ export default function (pi: ExtensionAPI) {
       )
     },
     async execute(toolCallId, params) {
-      if (pendingDispatch || dispatching) throw new Error('A dispatch is already in flight')
+      if (dispatchInFlight()) throw new Error('A dispatch is already in flight')
       editGateArmed = false
       const config = loadConfig(getConfigPath())
       if (!config) {
-        throw new Error(`No prewalk config at ${getConfigPath()}; the user must run /prewalk-config`)
+        throw new Error(
+          `No prewalk config at ${getConfigPath()}; the user must run /prewalk-config`,
+        )
       }
       pendingDispatch = {
         toolCallId,
@@ -156,7 +188,8 @@ export default function (pi: ExtensionAPI) {
   })
 
   pi.registerCommand('prewalk-config', {
-    description: 'Show or set the prewalk executor. Usage: /prewalk-config [provider/model thinking]',
+    description:
+      'Show or set the prewalk executor. Usage: /prewalk-config [provider/model thinking]',
     handler: async (args, ctx) => {
       try {
         const input = args.trim()
@@ -177,7 +210,10 @@ export default function (pi: ExtensionAPI) {
         }
         const [spec, thinking] = parts
         if (!(THINKING_LEVELS as readonly string[]).includes(thinking)) {
-          ctx.ui.notify(`"${thinking}" is not a thinking level (${THINKING_LEVELS.join('|')})`, 'warning')
+          ctx.ui.notify(
+            `"${thinking}" is not a thinking level (${THINKING_LEVELS.join('|')})`,
+            'warning',
+          )
           return
         }
         findConfiguredModel(ctx, spec)
@@ -222,7 +258,7 @@ export default function (pi: ExtensionAPI) {
   })
 
   pi.on('tool_execution_end', async event => {
-    if (!editGateArmed || pendingDispatch || dispatching) return
+    if (!editGateArmed || dispatchInFlight()) return
     if ((event.toolName !== 'edit' && event.toolName !== 'write') || event.isError) return
     editGateArmed = false
     pi.sendMessage(
@@ -232,54 +268,32 @@ export default function (pi: ExtensionAPI) {
   })
 
   pi.on('turn_end', async (_event, ctx) => {
-    if (!pendingDispatch || dispatching) return
-    dispatching = true
-    const job = pendingDispatch
+    if (!pendingDispatch) return
+    const dispatch = pendingDispatch
     pendingDispatch = undefined
-    const signal = ctx.signal
-
+    jobContext = ctx
     try {
-      const result = await executeSubagents(
+      startJob(
         pi,
+        jobs,
+        randomUUID().slice(0, 8),
+        'fork',
         true,
         {},
-        job.toolCallId,
+        dispatch.toolCallId,
         [
           {
             name: 'executor',
-            prompt: buildExecutorPrompt(job.instructions),
-            sessionKey: job.sessionKey,
+            prompt: buildExecutorPrompt(dispatch.instructions),
+            sessionKey: dispatch.sessionKey,
             forkParent: true,
-            forkOverride: { model: job.executor.model, thinking: job.executor.thinking },
+            forkOverride: { model: dispatch.executor.model, thinking: dispatch.executor.thinking },
           },
         ],
-        signal,
-        update => {
-          const details = update.details
-          if (!details || ctx.mode !== 'tui') return
-          ctx.ui.setWidget(
-            DISPATCH_PROGRESS_WIDGET,
-            (_tui, theme) =>
-              new Text(renderSubagentDetails(details, false, theme, 'dispatch_executor'), 0, 0),
-          )
-        },
         ctx,
       )
-      if (signal?.aborted) return
-      const reportText = result.content
-        .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
-        .map(part => part.text)
-        .join('\n')
-      pi.sendMessage(
-        {
-          customType: RESULT_MESSAGE_TYPE,
-          content: buildVerifyMessage(reportText, result.isError === true),
-          display: true,
-        },
-        { deliverAs: 'followUp', triggerTurn: true },
-      )
     } catch (error) {
-      if (signal?.aborted) return
+      jobContext = undefined
       pi.sendMessage(
         {
           customType: RESULT_MESSAGE_TYPE,
@@ -288,9 +302,11 @@ export default function (pi: ExtensionAPI) {
         },
         { deliverAs: 'followUp', triggerTurn: true },
       )
-    } finally {
-      if (ctx.mode === 'tui') ctx.ui.setWidget(DISPATCH_PROGRESS_WIDGET, undefined)
-      dispatching = false
     }
+  })
+
+  pi.on('session_shutdown', async () => {
+    pendingDispatch = undefined
+    await jobs.shutdown()
   })
 }

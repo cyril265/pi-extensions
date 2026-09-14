@@ -2,7 +2,7 @@
 
 `wt` is a tiny Node script that wraps `git worktree` for branch-per-task work.
 
-**Requirements:** Git, Node 22.18+ (for built-in TypeScript type stripping), and Perl for the `cd` prefill. Copy-on-write dependency reuse requires macOS and APFS.
+**Requirements:** Git, Node 22.18+ (for built-in TypeScript type stripping), Perl for the `cd` prefill, and Python 3 for `clean-generated-artifacts`. Copy-on-write dependency reuse requires macOS and APFS.
 
 **Install:** symlink `wt.mts` as `wt` into your `PATH`, e.g. `ln -s "$PWD/wt.mts" ~/.local/bin/wt`.
 The extension has to stay on the real file: Node only strips types from `.ts`/`.mts` files.
@@ -34,6 +34,8 @@ wt new <branch> --base origin/main
 wt new <branch> --path ../custom-dir
 wt clone <branch>
 wt clone origin/<branch>
+wt list          # alias: wt ls
+wt remove <branch>   # alias: wt rm
 ```
 
 Get all commands/options:
@@ -41,3 +43,13 @@ Get all commands/options:
 ```sh
 wt help
 ```
+
+## clean-generated-artifacts
+
+`clean-generated-artifacts` is a Python 3 script that frees disk space in a worktree you no longer build in. It takes one argument, the worktree root:
+
+```sh
+./clean-generated-artifacts ../repo_branch-name
+```
+
+It walks the tree and collects `node_modules`, .NET `bin` and `obj` directories, and git-ignored untracked `.angular` and `dist` directories. A `bin` counts as .NET output only when its parent holds a `.csproj`, `.fsproj`, or `.vbproj` file, or an `obj` sibling. The script prints every directory it found, then deletes them only after you type `delete`.

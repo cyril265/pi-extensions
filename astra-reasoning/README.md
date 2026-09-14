@@ -27,9 +27,10 @@ the reasoning history. Forks get a new cache key because Pi creates a new sessio
 Ordinary Pi compaction creates a new prompt prefix and retains any updates still
 in the recent history.
 
-Only `gpt-6-astra` on `openai-codex-responses` is eligible. Other models keep their
-normal behavior and never receive these internal messages. The live Codex endpoint
-rejects native updates for GPT-5.6 Sol, Luna, and Terra.
+A model is eligible when its `api` is `openai-codex-responses` and the last `/` segment
+of its id is `gpt-6-astra`, so prefixed ids match too. Other models keep their normal
+behavior and never receive these internal messages. The live Codex endpoint rejects
+native updates for GPT-5.6 Sol, Luna, and Terra.
 
 Server-side automatic truncation and compaction cannot be combined with native
 updates. This does not disable Pi's normal summary-based compaction. Do not load

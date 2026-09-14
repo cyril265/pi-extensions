@@ -13,6 +13,13 @@ export function getFinalOutput(messages: Message[]): string {
   return ''
 }
 
+export function getFinalError(messages: Message[]): string | undefined {
+  const last = messages.findLast(message => message.role === 'assistant')
+  if (last?.role !== 'assistant') return undefined
+  if (last.stopReason !== 'error' && last.stopReason !== 'aborted') return undefined
+  return last.errorMessage || `Subagent stopped: ${last.stopReason}`
+}
+
 function asToolArgs(args: unknown): Record<string, unknown> {
   return args && typeof args === 'object' && !Array.isArray(args)
     ? (args as Record<string, unknown>)
