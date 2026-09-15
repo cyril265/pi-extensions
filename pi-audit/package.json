@@ -11,7 +11,8 @@
   },
   "scripts": {
     "start": "node src/index.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "node --test test/e2e.test.ts"
   },
   "devDependencies": {
     "@types/cross-spawn": "6.0.6",
