@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
@@ -338,17 +338,21 @@ function readQuotaUsageCache(providerName: string): AnthropicUsageState | undefi
 function writeQuotaUsageCache(providerName: string, state: AnthropicUsageState): void {
   const path = getQuotaCachePath(providerName)
   const temporaryPath = `${path}.${process.pid}.tmp`
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(
-    temporaryPath,
-    JSON.stringify({
-      version: 1,
-      fetchedAt: state.fetchedAt,
-      windows: state.windows,
-    }),
-    'utf8',
-  )
-  renameSync(temporaryPath, path)
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(
+      temporaryPath,
+      JSON.stringify({
+        version: 1,
+        fetchedAt: state.fetchedAt,
+        windows: state.windows,
+      }),
+      'utf8',
+    )
+    renameSync(temporaryPath, path)
+  } catch {
+    rmSync(temporaryPath, { force: true })
+  }
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> {

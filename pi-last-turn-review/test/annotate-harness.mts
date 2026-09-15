@@ -1,5 +1,5 @@
 import { open } from 'glimpseui'
-import { buildAnnotateHtml } from '/Users/kpovolotskyy/ai-stuff/pi-extensions/pi-last-turn-review/src/ui.ts'
+import { buildAnnotateHtml } from '../src/ui.ts'
 const theme = { appearance: 'dark', bg: '#0b1020', panel: '#111827', hover: '#1f2937', active: '#243044', badge: '#1e293b', border: '#263244', text: '#e5e7eb', strong: '#f8fafc', muted: '#9ca3af', dim: '#6b7280', accent: '#60a5fa', success: '#34d399', error: '#fb7185', warning: '#fbbf24', diffAdded: '#22c55e', diffRemoved: '#ef4444' }
 const html = buildAnnotateHtml({ title: 'Annotate', sourceLabel: 'assistant', sourceHint: 'hint', theme, text: '# Heading\n\nSome **bold** text and a list:\n\n- one\n- two\n\n```ts\nconst x = 1\n```\n' })
 const win = open(html, { width: 1200, height: 800, title: 'annotate harness' })

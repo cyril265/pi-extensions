@@ -88,6 +88,9 @@ export function readSubagentSessionId(sessionPath: string): string | undefined {
 }
 
 export function formatPiSessionCommand(sessionPath: string): string {
+  if (process.platform === 'win32') {
+    return `pi --session '${sessionPath.replaceAll("'", "''")}'`
+  }
   return `pi --session '${sessionPath.replaceAll("'", "'\\''")}'`
 }
 

@@ -53,8 +53,16 @@ function wrapPreview(text: string, maxLineLength = 100, maxLines = 3): string[] 
 }
 
 function shortenPathForDisplay(filePath: string): string {
-  const home = os.homedir()
-  return filePath.startsWith(home) ? `~${filePath.slice(home.length)}` : filePath
+  if (!path.isAbsolute(filePath)) return filePath
+
+  const relative = path.relative(os.homedir(), filePath)
+  const isOutsideHome =
+    relative === '..' ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+
+  if (isOutsideHome) return filePath
+  return relative ? path.join('~', relative) : '~'
 }
 
 export function getToolDisplayName(toolName: string): string {

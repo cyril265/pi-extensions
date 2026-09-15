@@ -119,6 +119,12 @@ function resolveCurrentSessionFile(ctx: ExtensionCommandContext): string | undef
   return sessionFile ? resolvePath(sessionFile, ctx.cwd) : undefined
 }
 
+function isSamePath(left: string, right: string): boolean {
+  const a = resolve(left)
+  const b = resolve(right)
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
+}
+
 async function ensureFinder(basePath: string): Promise<FileFinder> {
   if (finderState?.basePath === basePath && !finderState.finder.isDestroyed) {
     return finderState.finder
@@ -453,7 +459,7 @@ async function grepPreviousSessions(
 
     for (const match of grep.value.items) {
       const absolutePath = resolve(sessionsDir, match.relativePath)
-      if (absolutePath === currentSessionFile) {
+      if (currentSessionFile && isSamePath(absolutePath, currentSessionFile)) {
         continue
       }
 

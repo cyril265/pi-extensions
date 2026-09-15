@@ -4,6 +4,30 @@ All notable changes to this repository are documented here.
 
 ## 2026-09-15
 
+### General
+
+- Added repository rules for macOS and Windows compatibility, end-to-end tests, and bidirectional `ai-lab` syncs.
+
+### footer
+
+- Quota cache write failures no longer break the footer, and failed writes remove their temporary file.
+
+### pi-last-turn-review
+
+- The vendor build runs the installed Tailwind CLI through Node instead of `npx`, and annotate test scripts now use portable relative imports.
+
+### session-search
+
+- Current-session exclusion now handles Windows path case differences.
+
+### simple-subagent
+
+- Session commands use Windows-safe quoting, and displayed home paths now handle platform separators without shortening sibling paths.
+
+### warp-notifications
+
+- Warp notifications write to stdout on Windows, where `/dev/tty` is unavailable.
+
 ### pi-audit
 
 - Split `src/index.ts` (1391 lines) into `index.ts`, `sources.ts`, `audit.ts`, `store.ts`, `update.ts`, `settings.ts`, `prompt.ts`, `exec.ts`.

@@ -81,6 +81,10 @@ function shouldUseStructuredWarpNotifications(): boolean {
 
 function writeWarpOsc(body: string): void {
   const sequence = `\x1b]777;notify;${WARP_SENTINEL_TITLE};${body}\x07`
+  if (process.platform === 'win32') {
+    process.stdout.write(sequence)
+    return
+  }
   try {
     writeFileSync('/dev/tty', sequence, { flag: 'a' })
   } catch {
