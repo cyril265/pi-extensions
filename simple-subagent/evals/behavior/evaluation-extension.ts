@@ -106,7 +106,7 @@ export default function evaluationExtension(pi: ExtensionAPI) {
         const execute = definition.execute.bind(definition)
         if (definition.name === 'runSubAgents') {
           if (config.variant === 'native') {
-            definition.description = definition.description.split('\n').filter(line => !line.includes('PI_SIMPLE_SUBAGENT_CLIENT')).join('\n')
+            definition.promptGuidelines = undefined
           }
           definition.execute = async (id, args: any, signal, update, ctx) => {
             const result = await execute(id, { ...args, agents: fixedAgents(args.agents) }, signal, update, ctx)

@@ -33,7 +33,7 @@ production software work.
 
 | Variant | Exposed interface |
 |---|---|
-| `native` | Production `runSubAgents` and `cancelSubAgents`; no Node client, and its hint is removed from the tool description |
+| `native` | Production `runSubAgents` and `cancelSubAgents`; no Node client, and its prompt guideline is removed from the system prompt |
 | `client` | Production as shipped: the same tools plus the Node client reachable from bash |
 
 `client` is the interface under test; `native` is the control. All child requests use the

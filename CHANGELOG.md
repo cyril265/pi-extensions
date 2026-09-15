@@ -2,6 +2,14 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-09-15
+
+### simple-subagent
+
+- `runSubAgents`: the Node client hint (`PI_SIMPLE_SUBAGENT_CLIENT`, `dispatch`/`run`) moved from the tool description to `promptGuidelines`, worded with the trigger first. The description now covers only call semantics.
+- Both subagent tools got a `promptSnippet`, so they appear in the `Available tools` list of the default system prompt.
+- Behavior eval `native` variant clears `promptGuidelines` instead of filtering description lines.
+
 ## 2026-09-13
 
 ### General

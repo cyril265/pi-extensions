@@ -279,9 +279,12 @@ export function registerSubagentTools(
     label: 'Run Subagents',
     description: `
         Start subagents and return immediately; one result message per call arrives when all its agents finish. Subagents do not see your conversation and cannot delegate. Do other work or end your turn. Do not poll.
-        From Node: \`const { dispatch, run } = await import(process.env.PI_SIMPLE_SUBAGENT_CLIENT)\`, same agents array. \`dispatch\` behaves like this tool. When a result must feed further work in the same step, \`await run(agents)\` waits and returns \`{ isError, text, agents: [{ name, output?, ... }] }\`.
         ${aliases.length > 0 ? `overrideModel aliases: ${aliases.join(', ')}` : ''}
         `,
+    promptSnippet: 'Run isolated subagents in parallel; results arrive later as messages',
+    promptGuidelines: [
+      'When a subagent result must feed further work in the same step, run subagents from Node instead of the runSubAgents tool: `const { dispatch, run } = await import(process.env.PI_SIMPLE_SUBAGENT_CLIENT)` takes the same agents array; `await run(agents)` waits and returns `{ isError, text, agents: [{ name, output?, ... }] }`. `dispatch` behaves like the runSubAgents tool.',
+    ],
     parameters: runSubAgentsParameters,
     prepareArguments: parseStringifiedAgents,
     renderCall(args, theme) {
@@ -353,6 +356,7 @@ export function registerSubagentTools(
     ...runSubAgentsTool,
     name: 'runSubAgentsWithContext',
     label: 'Run Subagents With Context',
+    promptSnippet: 'Fork this conversation into subagents; only when the user asks',
     description: `
       Fork your conversation into subagents and return a job ID plus session keys immediately. Use only when the user asks for it. One result message per call arrives when all its agents finish. Children inherit and lock cwd, model, and thinking. Subagents cannot delegate.
     `,
