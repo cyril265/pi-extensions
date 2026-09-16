@@ -17,6 +17,8 @@ import {
 } from './settings.ts'
 import {
   copyTree,
+  dependencyInstallFlags,
+  hasPackageJson,
   identityForSource,
   parseSource,
   type FetchedSource,
@@ -62,12 +64,12 @@ export function displayLocalSource(scope: Scope, snapshotPath: string) {
 }
 
 export async function installSnapshotDependencies(snapshotPath: string) {
-  if (!(statSync(snapshotPath).isDirectory() && existsSync(join(snapshotPath, 'package.json')))) {
+  if (!hasPackageJson(snapshotPath)) {
     return
   }
 
   console.log(`Installing dependencies in ${snapshotPath}...`)
-  npm(['install', '--omit=dev', '--ignore-scripts'], snapshotPath)
+  npm(['ci', ...dependencyInstallFlags], snapshotPath)
 
   const packageJson = JSON.parse(readFileSync(join(snapshotPath, 'package.json'), 'utf-8')) as {
     scripts?: { postinstall?: string }

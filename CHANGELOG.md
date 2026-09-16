@@ -30,6 +30,12 @@ All notable changes to this repository are documented here.
 
 ### pi-audit
 
+- Production dependencies are installed (`--ignore-scripts`) into the audit directory before the audit, so the model reviews the dependency code the package imports instead of judging dependencies by name. `npm audit` advisories for the installed tree are passed to the model as evidence.
+- The `package-lock.json` generated at audit time is stored with the snapshot and the post-approval install uses `npm ci`, so the installed dependency versions are the audited ones.
+- Dependency installs use `--legacy-peer-deps`: pi aliases its peer packages to its bundled copies at load time, so the auto-installed peer copies (hundreds of MB per snapshot) were never used, and peer conflicts among a package's dev dependencies (`pi-token-burden@0.6.5`) no longer break the install.
+- Update diffs compare the installed snapshot with a `node_modules`-free copy of the candidate; lockfile changes appear in the diff.
+- Verdict rubric: `no` means the package works against its user (exfiltration, hidden or obfuscated behavior, dangerous behavior its purpose does not require); disclosed, purpose-consistent behavior that hands control to third parties is `maybe`. Previously `pi-mcp-adapter` and `pi-claude-code-use` flipped between `yes` and `no` across runs; now 4/4 `maybe`.
+- Checklist gains writes to shell startup files, crontab, launchd, and other autostart locations.
 - Split `src/index.ts` (1391 lines) into `index.ts`, `sources.ts`, `audit.ts`, `store.ts`, `update.ts`, `settings.ts`, `prompt.ts`, `exec.ts`.
 - Fixed `migrate` for global npm packages: it ran `npm uninstall -g`, which targets the system npm prefix. It now uninstalls from `<agent-dir>/npm`, where pi installs.
 - Manifests record `version` (npm) or `gitHead` (git) as required fields plus `pinnedSource`; `readManifest` rejects manifests missing them (existing snapshots need `pinnedSource` backfilled once). Removed the fallbacks that treated snapshots without a version as "update available" and the `.pi-audit-install.json` legacy manifest name.

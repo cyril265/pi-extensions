@@ -53,6 +53,15 @@ export function identityForSource(source: ParsedSource) {
 
 export function fetchSource(source: ParsedSource): FetchedSource {
   const root = mkdtempSync(join(tmpdir(), 'pi-audit-'))
+  const fetched = fetchInto(source, root)
+  if (hasPackageJson(fetched.auditPath)) {
+    console.log('Installing dependencies for review...')
+    npm(['install', ...dependencyInstallFlags], fetched.auditPath)
+  }
+  return fetched
+}
+
+function fetchInto(source: ParsedSource, root: string): FetchedSource {
   if (source.kind === 'npm') {
     return fetchNpm(source, root)
   }
@@ -114,6 +123,13 @@ export function copyTree(from: string, to: string) {
     copyFileSync(from, to)
   }
 }
+
+export function hasPackageJson(path: string) {
+  return statSync(path).isDirectory() && existsSync(join(path, 'package.json'))
+}
+
+// Pi aliases its peer packages (@earendil-works/*, typebox) to its bundled copies at load time.
+export const dependencyInstallFlags = ['--omit=dev', '--ignore-scripts', '--legacy-peer-deps']
 
 function shouldCopyPath(path: string) {
   const segments = path.split(/[\\/]/)

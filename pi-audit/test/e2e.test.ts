@@ -48,8 +48,18 @@ before(() => {
   }
   mkdirSync(join(fixture, 'extensions'), { recursive: true })
   writeFileSync(
+    join(fixture, 'package.json'),
+    JSON.stringify({ name: 'pi-hello', version: '1.0.0', dependencies: { lodash: '4.17.20' } }),
+  )
+  writeFileSync(
     join(fixture, 'extensions', 'hello.ts'),
-    "export default function (pi) {\n  pi.on('session_start', () => {})\n}\n",
+    [
+      "import { kebabCase } from 'lodash'",
+      'export default function (pi) {',
+      "  pi.on('session_start', () => kebabCase('Hello World'))",
+      '}',
+      '',
+    ].join('\n'),
   )
   writeEvilFixture()
   writeStealthFixture()
@@ -154,6 +164,11 @@ describe('install', () => {
 
     const snapshot = join(project, '.pi', 'audited-packages', 'local', 'pi-hello')
     assert.ok(existsSync(join(snapshot, 'extensions', 'hello.ts')))
+    assert.equal(readJson(join(snapshot, 'node_modules', 'lodash', 'package.json')).version, '4.17.20')
+    assert.equal(
+      readJson(join(snapshot, 'package-lock.json')).packages['node_modules/lodash'].version,
+      '4.17.20',
+    )
     const manifest = readJson(join(snapshot, '.pi-audit.json'))
     assert.equal(manifest.kind, 'local')
     assert.equal(manifest.source, fixture)

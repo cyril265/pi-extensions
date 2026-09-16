@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { dirname, join } from 'node:path'
 import crossSpawn from 'cross-spawn'
 import { auditPackage, formatAudit, type AuditResult, type PreviousAudit } from './audit.ts'
 import { errorMessage } from './exec.ts'
@@ -154,9 +154,10 @@ function auditOutcome(candidate: Candidate): Outcome {
 function previousAudit(entry: ManagedEntry, fetched: FetchedRemote): PreviousAudit {
   const root = dirname(fetched.auditPath)
   copyTree(entry.snapshotPath, join(root, 'installed'))
+  copyTree(fetched.auditPath, join(root, 'candidate'))
   const diff = crossSpawn.sync(
     'git',
-    ['diff', '--no-index', '--', 'installed', basename(fetched.auditPath)],
+    ['diff', '--no-index', '--', 'installed', 'candidate'],
     { cwd: root, encoding: 'utf-8' },
   )
   if (diff.error) {
