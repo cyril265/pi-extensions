@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { closeSync, mkdirSync, openSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import crossSpawn from 'cross-spawn'
 import { auditPackage, formatAudit, type AuditResult, type PreviousAudit } from './audit.ts'
@@ -155,20 +155,30 @@ function previousAudit(entry: ManagedEntry, fetched: FetchedRemote): PreviousAud
   const root = dirname(fetched.auditPath)
   copyTree(entry.snapshotPath, join(root, 'installed'))
   copyTree(fetched.auditPath, join(root, 'candidate'))
-  const diff = crossSpawn.sync(
-    'git',
-    ['diff', '--no-index', '--', 'installed', 'candidate'],
-    { cwd: root, encoding: 'utf-8' },
-  )
-  if (diff.error) {
-    throw diff.error
-  }
-  if (diff.status !== 0 && diff.status !== 1) {
-    throw new Error(`git diff failed: ${diff.stderr.trim()}`)
-  }
-  const diffPath = join(root, 'changes.diff')
-  writeFileSync(diffPath, diff.stdout, 'utf-8')
+  const diffPath = writeUpdateDiff(root)
   return { revision: currentRevision(entry), audit: entry.manifest.audit, diffPath }
+}
+
+export function writeUpdateDiff(root: string): string {
+  const diffPath = join(root, 'changes.diff')
+  const fd = openSync(diffPath, 'w')
+  try {
+    // Write directly to disk: large package diffs exceed spawnSync's output buffer.
+    const diff = crossSpawn.sync(
+      'git',
+      ['diff', '--no-index', '--', 'installed', 'candidate'],
+      { cwd: root, encoding: 'utf-8', stdio: ['ignore', fd, 'pipe'] },
+    )
+    if (diff.error) {
+      throw diff.error
+    }
+    if (diff.status !== 0 && diff.status !== 1) {
+      throw new Error(`git diff failed: ${diff.stderr?.trim() ?? `exit status ${diff.status}`}`)
+    }
+    return diffPath
+  } finally {
+    closeSync(fd)
+  }
 }
 
 async function approve(update: AuditedUpdate) {

@@ -150,7 +150,7 @@ export function serializeMessagesToResponsesInput<TApi extends Api>(
 	messages: AgentMessage[],
 	options: SerializeResponsesMessagesOptions = {},
 ): ResponsesInputItem[] {
-	const llmMessages = convertToLlm(messages);
+	const llmMessages = convertToLlm(messages).filter((message) => message.role !== "system");
 	const transformedMessages = transformMessagesForResponses(llmMessages);
 	const input: ResponsesInputItem[] = [];
 

@@ -148,8 +148,13 @@ export function readNpmPackageVersion(packagePath: string) {
 
 export function getLatestNpmVersion(packageName: string) {
   const raw = npm(['view', packageName, 'version', '--json'], process.cwd()).trim()
-  const version = raw ? (JSON.parse(raw) as unknown) : undefined
-  if (typeof version !== 'string') {
+  return parseNpmVersionResponse(packageName, raw)
+}
+
+export function parseNpmVersionResponse(packageName: string, raw: string): string {
+  const response: unknown = raw ? JSON.parse(raw) : undefined
+  const version = Array.isArray(response) && response.length === 1 ? response[0] : response
+  if (typeof version !== 'string' || !version.trim()) {
     throw new Error(`Invalid npm view response for ${packageName}: ${raw}`)
   }
   return version

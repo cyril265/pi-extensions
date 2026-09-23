@@ -2,6 +2,17 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-09-23
+
+### pi-audit
+
+- The update check accepts npm 12 `npm view --json` output, which wraps the version in a single-item array.
+- The update diff is written directly to disk. Large package diffs no longer exceed the process output buffer.
+
+### pi-openai-compaction
+
+- Fixed `/compact` failing with `Cannot read properties of undefined (reading 'split')` on pi 0.87, which stores the system prompt as `system` messages in the session. The serializer now skips these messages. The system prompt still goes to the compact request as `instructions`.
+
 ## 2026-09-15
 
 ### General
