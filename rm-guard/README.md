@@ -22,6 +22,10 @@ aborted), `rm` exits 3.
 
 Without a UI (`pi -p`, subagents) blocked calls exit 3 immediately, as before.
 
+While a dialog is open, the extension emits `herdr:blocked` on `pi.events`. The herdr pi
+integration (`herdr integration install pi`) then shows the pane as blocked with the message
+`rm needs confirmation`. Without herdr, nothing listens and the event has no effect.
+
 The temp dirs are allowed so that `T=$(mktemp -d); ...; rm -rf "$T"` keeps working. macOS
 `mktemp` ignores `TMPDIR`, so a private scratch dir cannot capture it. The cost: `rm -rf /tmp/*`
 and `rm -rf "$TMPDIR"/*` delete everything writable there, including other jobs' temp data.

@@ -2,6 +2,12 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-09-25
+
+### rm-guard
+
+- The confirm dialog now emits `herdr:blocked`, so the herdr pi integration shows the pane as blocked while `rm` waits for an answer.
+
 ## 2026-09-23
 
 ### pi-audit

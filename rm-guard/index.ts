@@ -62,11 +62,16 @@ export default function rmGuard(pi: ExtensionAPI) {
     }
     const askDir = mkdtempSync(join(tmpdir(), 'pi-rm-ask-'))
     const stop = serveAskDir(askDir, paths => {
-      dialogs = dialogs.then(() =>
-        ctx.ui.confirm('rm outside the allowed directories', paths.join('\n'), {
-          signal: ctx.signal,
-        }),
-      )
+      dialogs = dialogs.then(async () => {
+        pi.events.emit('herdr:blocked', { active: true, label: 'rm needs confirmation' })
+        try {
+          return await ctx.ui.confirm('rm outside the allowed directories', paths.join('\n'), {
+            signal: ctx.signal,
+          })
+        } finally {
+          pi.events.emit('herdr:blocked', { active: false })
+        }
+      })
       return dialogs
     })
     cleanups.set(event.toolCallId, stop)
