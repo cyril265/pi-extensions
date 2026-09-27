@@ -2,6 +2,12 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-09-27
+
+### herdr-tab-name
+
+- Fixed Pi exiting with `This extension ctx is stale after session replacement or reload` when a new session, fork, resume, or reload happened while automatic naming was still running. The replaced session now drops its pending naming work without touching the herdr tab.
+
 ## 2026-09-25
 
 ### rm-guard

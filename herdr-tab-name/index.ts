@@ -362,16 +362,19 @@ export default function (pi: ExtensionAPI) {
   if (!inHerdrPane) return;
 
   let rootSession = false;
+  let sessionEnded = false;
   let renaming = false;
   let failureNotified = false;
   let automaticNaming = Promise.resolve();
 
   const run = async (ctx: ExtensionContext, prompt?: string): Promise<void> => {
+    if (sessionEnded) return;
     renaming = true;
     try {
       const manual = await mirrorManualName(pi);
-      if (!manual) await renameTab(pi, ctx, prompt);
+      if (!manual && !sessionEnded) await renameTab(pi, ctx, prompt);
     } catch (error) {
+      if (sessionEnded) return;
       const message = error instanceof Error ? error.message : String(error);
       if (!failureNotified && ctx.hasUI) {
         failureNotified = true;
@@ -386,6 +389,11 @@ export default function (pi: ExtensionAPI) {
     rootSession = ctx.hasUI === true;
   });
 
+  // pi invalidates this pi and every ctx right after session_shutdown handlers run.
+  pi.on("session_shutdown", () => {
+    sessionEnded = true;
+  });
+
   pi.registerCommand("tab-name", {
     description: "Regenerate this session and herdr tab names",
     handler: async (_args, ctx) => {
@@ -393,6 +401,7 @@ export default function (pi: ExtensionAPI) {
       renaming = true;
       try {
         const names = await forceRename(pi, ctx);
+        if (sessionEnded) return;
         if (names) {
           ctx.ui.notify(
             `session named "${names.session}" · tab named "${names.tab}"`,
@@ -402,6 +411,7 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.notify("herdr-tab-name: no suggestion for this session", "warning");
         }
       } catch (error) {
+        if (sessionEnded) return;
         const message = error instanceof Error ? error.message : String(error);
         ctx.ui.notify(`herdr-tab-name: ${message}`, "warning");
       } finally {
