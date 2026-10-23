@@ -40,7 +40,6 @@ Global settings live in `~/.pi/agent/settings.json`, project settings in `.pi/se
 | [`herdr-settle`](herdr-settle) | Closes pi tabs idle for 7 days or whose GitLab MR merged or closed, and reopens them from a Herdr shelf. |
 | [`piq`](piq) | `piq` answers questions; `pix` fills shell input without executing it. Both use Sol medium. |
 | [`remote-handoff`](remote-handoff) | Hands a conversation and its project files to pi on an SSH host, then brings the conversation and changes back. |
-| [`pi-enclave`](pi-enclave) | Runs all tools inside a Gondolin VM. Fork of yapp, see Attribution. |
 | [`pi-openai-compaction`](pi-openai-compaction) | Replays OpenAI Responses compaction V2 checkpoints. Fork, see Attribution. |
 | [`self-compaction`](self-compaction) | Compacts by asking the session itself, with its cached prompt, tools, and full messages, to write the summary. |
 | [`pi-last-turn-review`](pi-last-turn-review) | `/diff-turn`, `/diff-git`, `/annotate-turn`, `/undo-turn` — review the last turn's diff in a native window with inline comments. Fork, see Attribution. |
@@ -97,17 +96,13 @@ The list covers the whole catalog, so it can include models the proxy does not s
 example — replace `/absolute/path/to/pi-extensions` with your checkout path. Never commit a real
 `settings.json`: pi stores provider and web-search API keys in it.
 
-The example leaves out `unified-edit.ts` (already bundled into `pi-enclave`),
-`activate-mcp-aliases.ts` (needs `pi-claude-code-use`), `anthropic-thinking-binding.ts`
+The example leaves out `activate-mcp-aliases.ts` (needs `pi-claude-code-use`), `anthropic-thinking-binding.ts`
 (account-specific, see the warning above), and `pi-audit` and `piq` (CLIs, not pi packages).
 
 ## Attribution
 
-Three packages here are forks of other people's work, kept under their original MIT licenses:
+Two packages here are forks of other people's work, kept under their original MIT licenses:
 
-- [`pi-enclave`](pi-enclave) — fork of [yapp](https://github.com/mgabor3141/yapp) by
-  [mgabor3141](https://github.com/mgabor3141). Retargeted at `@earendil-works/pi-coding-agent` and
-  combined with the unified patch `edit` tool. See [`pi-enclave/README.md`](pi-enclave/README.md).
 - [`pi-openai-compaction`](pi-openai-compaction) — `@jordyvd/pi-openai-compaction` by Jordy Van
   Domselaar. License: [`pi-openai-compaction/LICENSE`](pi-openai-compaction/LICENSE).
 - [`pi-last-turn-review`](pi-last-turn-review) — © pi-last-turn-review contributors. License:

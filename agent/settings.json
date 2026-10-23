@@ -20,7 +20,7 @@
     "/absolute/path/to/pi-extensions/herdr-tab-name",
     "/absolute/path/to/pi-extensions/pi-last-turn-review",
     "/absolute/path/to/pi-extensions/pi-openai-compaction",
-    "/absolute/path/to/pi-extensions/pi-enclave",
+    "/absolute/path/to/pi-extensions/unified-edit.ts",
     "/absolute/path/to/pi-extensions/branch-stats.ts",
     "/absolute/path/to/pi-extensions/cache-retention-long.ts",
     "/absolute/path/to/pi-extensions/shift-escape.ts"

@@ -4,6 +4,10 @@ All notable changes to this repository are documented here.
 
 ## 2026-10-23
 
+### pi-enclave
+
+- Removed. For the unified patch `edit` tool without the VM, load `unified-edit.ts`; the example `agent/settings.json` now does.
+
 ### piq
 
 - `pil`, `pim`, and `pic` are replaced by `piq` ("pi question", prints an answer and keeps Pi's built-in tools) and `pix` ("pi execute", fills the shell input with a command without pressing Enter). Both use `openai-codex/gpt-5.6-sol:medium`. Run `npm link` again to install the new commands.
