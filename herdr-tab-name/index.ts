@@ -430,7 +430,7 @@ export default function (pi: ExtensionAPI) {
   // Evaluate prompts in the rename window (every prompt early, then every Nth turn).
   // Serialize model calls without delaying the main agent response.
   pi.on("before_agent_start", (event, ctx) => {
-    if (!rootSession) return;
+    if (!rootSession || event.messageType !== "user") return;
     automaticNaming = automaticNaming.then(() => run(ctx, event.prompt));
   });
 }

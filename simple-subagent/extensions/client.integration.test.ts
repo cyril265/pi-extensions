@@ -269,7 +269,7 @@ test('fork failure enters the user-input lifecycle', { timeout: 15_000 }, async 
     { agents: [{ name: 'reviewer', prompt: 'Review', sessionKey: 'fork-key' }] },
     undefined,
     undefined,
-    context,
+    toolContext('fork-call'),
   )
   await session.agent.prompt('Process the queued fork without configured credentials')
   assert.match(await completion.promise, /Forked subagents failed: Parent context can only be forked from a persisted session/)
@@ -296,7 +296,7 @@ test('the real bash tool reaches the client through inherited environment', { ti
   const bash = session.getToolDefinition('bash')
   assert.ok(bash)
   await writeFile(join(directory, 'delegate.mjs'), runScript(JSON.stringify([agent('via-bash')])))
-  const result = await bash.execute('bash-call', { command: 'node delegate.mjs' }, undefined, undefined, context)
+  const result = await bash.execute('bash-call', { command: 'node delegate.mjs' }, undefined, undefined, toolContext('bash-call'))
   const text = result.content.map(part => (part.type === 'text' ? part.text : '')).join('')
   const parsed: RunResult = JSON.parse(text.trim().split('\n').at(-1)!)
   assert.equal(parsed.agents[0].name, 'via-bash')
@@ -309,7 +309,7 @@ test('aborting the bash tool mid-run leaves the job running for automatic delive
   assert.ok(bash)
   await writeFile(join(directory, 'hang.mjs'), runScript(JSON.stringify([agent('hanging', { prompt: 'hold', overrideModel: hangingModel })])))
   const controller = new AbortController()
-  const execution = bash.execute('bash-abort', { command: 'node hang.mjs' }, controller.signal, undefined, context)
+  const execution = bash.execute('bash-abort', { command: 'node hang.mjs' }, controller.signal, undefined, toolContext('bash-abort', controller.signal))
   const job = await waitFor(() => runningJob('hanging'))
   await waitFor(() => heldRequests === 1)
   const completion = Promise.withResolvers<string>()
@@ -320,7 +320,7 @@ test('aborting the bash tool mid-run leaves the job running for automatic delive
   assert.ok(runningJob('hanging'))
   const cancel = session.getToolDefinition('cancelSubAgents')
   assert.ok(cancel)
-  await cancel.execute('cancel-orphan', { jobId: job.id }, undefined, undefined, context)
+  await cancel.execute('cancel-orphan', { jobId: job.id }, undefined, undefined, toolContext('cancel-orphan'))
   const message = await completion.promise
   assert.match(message, new RegExp(job.id))
   assert.match(message, /interrupted/)
@@ -331,13 +331,13 @@ test('cancelSubAgents interrupts a running job and rejects unknown jobs', { time
   const cancel = session.getToolDefinition('cancelSubAgents')
   assert.ok(cancel)
   await assert.rejects(
-    cancel.execute('cancel-unknown', { jobId: 'unknown' }, undefined, undefined, context),
+    cancel.execute('cancel-unknown', { jobId: 'unknown' }, undefined, undefined, toolContext('cancel-unknown')),
     /No running subagent job unknown/,
   )
   const pending = script(runScript(JSON.stringify([agent('cancelled', { prompt: 'hold', overrideModel: hangingModel })])))
   const job = await waitFor(() => runningJob('cancelled'))
   await waitFor(() => heldRequests === 2)
-  await cancel.execute('cancel-running', { jobId: job.id }, undefined, undefined, context)
+  await cancel.execute('cancel-running', { jobId: job.id }, undefined, undefined, toolContext('cancel-running'))
   const result = await pending
   assert.equal(result.code, 0, result.stderr)
   const parsed: RunResult = JSON.parse(result.stdout)
@@ -365,6 +365,11 @@ test('session shutdown rejects a waiting run and clears the environment', { time
     connect({ host: '127.0.0.1', port }).once('connect', resolve).once('error', reject)
   }), /ECONNREFUSED/)
 })
+
+function toolContext(toolCallId: string, signal?: AbortSignal) {
+  assert.ok(session?.extensionRunner)
+  return session.extensionRunner.createToolContext(toolCallId, signal)
+}
 
 function runningJob(agentName: string) {
   return runtime.listRunning().find(job => job.agents[0].name === agentName)

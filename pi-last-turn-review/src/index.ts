@@ -1344,7 +1344,9 @@ export default function (pi: ExtensionAPI) {
   })
 
   pi.on('before_agent_start', async (event, ctx) => {
-    activePromptTextBySession.set(ctx.sessionManager.getSessionId(), event.prompt)
+    const sessionId = ctx.sessionManager.getSessionId()
+    if (event.messageType === 'user') activePromptTextBySession.set(sessionId, event.prompt)
+    else activePromptTextBySession.delete(sessionId)
   })
 
   pi.on('turn_start', async (event, ctx) => {

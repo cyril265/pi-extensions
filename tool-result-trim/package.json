@@ -16,10 +16,7 @@
     ]
   },
   "scripts": {
-    "test": "node --test src/pi-bash-trim.test.ts"
-  },
-  "dependencies": {
-    "pi-bash-trim": "1.0.2"
+    "test": "node --test index.integration.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

@@ -1,18 +1,27 @@
 import { readFileSync } from 'node:fs'
-import { readFile, writeFile } from 'node:fs/promises'
-import { homedir, tmpdir } from 'node:os'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import registerBashTrim, {
+import { registerBashTrim } from './bash.ts'
+import {
+  detailsFullOutputPath,
+  readOptionalFile,
+  splitExitCode,
+  writeTempText,
+} from './tool-output.ts'
+import {
   DEFAULT_HEAD_RATIO,
   DEFAULT_MAX_LINE_WIDTH,
   DEFAULT_MAX_TOTAL_TOKENS,
+  DEFAULT_MIN_DEDUP_LINES,
   DEFAULT_MIN_TOKENS_TO_TRIM,
   DEFAULT_TRIMMED_WIDTH,
+  describeTrim,
   type TrimOptions,
   type TrimResult,
   trimOutput,
-} from 'pi-bash-trim'
+  wasTrimmed,
+} from './trim.ts'
 
 type TextContentBlock = {
   type: 'text'
@@ -35,7 +44,6 @@ const CONFIG_FILE_NAME = 'pi-tool-result-trim.json'
 const BASH_TOOL_NAME = 'bash'
 const READ_TOOL_NAME = 'read'
 const ALWAYS_EXCLUDED_TOOL_NAMES = [BASH_TOOL_NAME, READ_TOOL_NAME]
-const DEFAULT_MIN_DEDUP_LINES = 4
 const DEFAULT_CONFIG: ToolResultTrimConfig = {
   trimOptions: {
     maxLineWidth: DEFAULT_MAX_LINE_WIDTH,
@@ -48,21 +56,18 @@ const DEFAULT_CONFIG: ToolResultTrimConfig = {
   excludeTools: ALWAYS_EXCLUDED_TOOL_NAMES,
 }
 
-let tempCounter = 0
-
 export default function (pi: ExtensionAPI) {
-  registerBashTrimExtension(pi)
-
   const config = loadConfig()
+  registerBashTrim(pi, config.trimOptions)
 
   pi.on('tool_result', async event => {
     if (!shouldTrimTool(config, event.toolName)) return
 
     const textBlocks = event.content.filter(isTextContentBlock)
     const existingFullTextPath =
-      textBlocks.length === 1 ? extractFullOutputPath(event.details) : undefined
+      textBlocks.length === 1 ? detailsFullOutputPath(event.details) : undefined
     const existingFullText = existingFullTextPath
-      ? await readExistingFullOutput(existingFullTextPath)
+      ? await readOptionalFile(existingFullTextPath)
       : undefined
     const plans: ToolResultTextPlan[] = []
 
@@ -71,12 +76,11 @@ export default function (pi: ExtensionAPI) {
       if (!isTextContentBlock(block)) continue
       if (block.text.trim().length === 0 || block.text === '(no output)') continue
 
-      const suffix = extractExitCodeSuffix(block.text)
-      const sourceText = existingFullText ?? removeSuffix(block.text, suffix)
-      const trimResult = trimOutput(sourceText, config.trimOptions)
+      const { body, exitCodeLine } = splitExitCode(block.text)
+      const trimResult = trimOutput(existingFullText ?? body, config.trimOptions)
       if (!wasTrimmed(trimResult)) continue
 
-      plans.push({ blockIndex, trimResult, suffix })
+      plans.push({ blockIndex, trimResult, suffix: exitCodeLine })
     }
 
     if (plans.length === 0) return
@@ -84,8 +88,9 @@ export default function (pi: ExtensionAPI) {
     const fullTextPath =
       existingFullText !== undefined && existingFullTextPath
         ? existingFullTextPath
-        : await writeFullText(
-            event.toolName,
+        : await writeTempText(
+            'pi-tool-result-trim',
+            `${safeFileSegment(event.toolName)}.txt`,
             buildFullTextFile(event.toolName, event.toolCallId, event.content),
           )
 
@@ -103,37 +108,13 @@ export default function (pi: ExtensionAPI) {
   })
 }
 
-function registerBashTrimExtension(pi: ExtensionAPI): void {
-  const register = registerBashTrim as unknown as (pi: ExtensionAPI) => void
-  register(pi)
-}
-
 function shouldTrimTool(config: ToolResultTrimConfig, toolName: string): boolean {
   if (config.includeTools && !config.includeTools.includes(toolName)) return false
   return !config.excludeTools.includes(toolName)
 }
 
-function wasTrimmed(result: TrimResult): boolean {
-  return result.columnsTrimmed || result.rowsTrimmed || result.dedupedLines > 0
-}
-
 function formatHeader(result: TrimResult, fullTextPath: string): string {
-  const parts: string[] = []
-  if (result.dedupedLines > 0) parts.push(`${result.dedupedLines} repetitive lines collapsed`)
-  if (result.rowsTrimmed) parts.push(`${result.omittedLines} lines omitted`)
-  if (result.columnsTrimmed) parts.push('long lines shortened with [...]')
-
-  return `[Tool result trimmed: ${parts.join(', ')}. Full text: ${fullTextPath}]`
-}
-
-function extractExitCodeSuffix(text: string): string {
-  const match = text.match(/\n\nCommand exited with code \d+$/)
-  return match?.[0] ?? ''
-}
-
-function removeSuffix(text: string, suffix: string): string {
-  if (!suffix) return text
-  return text.slice(0, text.length - suffix.length)
+  return `[Tool result trimmed: ${describeTrim(result)}. Full text: ${fullTextPath}]`
 }
 
 function isTextContentBlock(block: unknown): block is TextContentBlock {
@@ -158,28 +139,6 @@ function buildFullTextFile(
     sections.push(`--- text block ${index + 1} ---\n${block.text}`)
   }
   return `${sections.join('\n\n')}\n`
-}
-
-async function readExistingFullOutput(fullOutputPath: string): Promise<string | undefined> {
-  try {
-    return await readFile(fullOutputPath, 'utf-8')
-  } catch {
-    return undefined
-  }
-}
-
-function extractFullOutputPath(details: unknown): string | undefined {
-  if (!isRecord(details)) return undefined
-  return typeof details.fullOutputPath === 'string' ? details.fullOutputPath : undefined
-}
-
-async function writeFullText(toolName: string, text: string): Promise<string> {
-  const path = join(
-    tmpdir(),
-    `pi-tool-result-trim-${process.pid}-${++tempCounter}-${safeFileSegment(toolName)}.txt`,
-  )
-  await writeFile(path, text, 'utf-8')
-  return path
 }
 
 function loadConfig(): ToolResultTrimConfig {

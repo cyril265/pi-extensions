@@ -1,0 +1,28 @@
+{
+  "name": "pi-self-compaction",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test:live": "node --test index.e2e.test.ts",
+    "typecheck": "tsc --noEmit --strict --skipLibCheck --target es2023 --module nodenext --allowImportingTsExtensions index.ts index.e2e.test.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "typescript": "^6.0.3"
+  }
+}

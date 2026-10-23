@@ -9,6 +9,7 @@
     "/absolute/path/to/pi-extensions/simple-subagent",
     "/absolute/path/to/pi-extensions/prewalk",
     "/absolute/path/to/pi-extensions/cwd",
+    "/absolute/path/to/pi-extensions/editors",
     "/absolute/path/to/pi-extensions/session-search",
     "/absolute/path/to/pi-extensions/tool-result-trim",
     "/absolute/path/to/pi-extensions/rm-guard",

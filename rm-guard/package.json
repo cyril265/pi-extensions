@@ -16,13 +16,15 @@
     ]
   },
   "scripts": {
-    "test": "node --test rm.test.ts rm.docker.test.ts"
+    "test": "node --test rm.test.ts rm.docker.test.ts",
+    "test:e2e": "node --test extension.e2e.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@tian.zuo/pi-background-terminals": "0.5.4",
     "@types/node": "^26.1.1"
   }
 }

@@ -3,12 +3,11 @@ import {
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { createHash, randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { asError, hasErrorCode } from "./errors.js";
+import { hasErrorCode } from "./errors.js";
 import {
   checkApplyPatch,
   createBinaryPatch,
@@ -17,6 +16,7 @@ import {
   git,
   repositoryGit,
   resolveTree,
+  snapshotTree,
   type RepositoryPaths,
 } from "./git.js";
 import {
@@ -24,7 +24,9 @@ import {
   hashFileSha256,
   type PreparedSessionFile,
 } from "./session.js";
+import { piInvocation } from "./pi-version.js";
 import type { ApplyPlan } from "./state.js";
+import { runInTerminal, type TerminalChildExit } from "./terminal.js";
 
 const companionPath = fileURLToPath(new URL("./merge-review-companion.ts", import.meta.url));
 const reviewOutcomeMarkerName = "outcome";
@@ -49,6 +51,7 @@ type InteractiveMergeReviewResult =
     kind: "completed";
     applyPlan: MergeReviewApplyPlanInput;
     reviewSession: PreparedSessionFile;
+    refs: string[];
   };
 
 interface InteractiveMergeReviewOptions {
@@ -92,11 +95,6 @@ export class LocalFilesChangedError extends Error {
     super("Local files changed during merge review. Start the review again with the current files.");
     this.name = "LocalFilesChangedError";
   }
-}
-
-interface ReviewPiExit {
-  started: boolean;
-  error?: Error;
 }
 
 async function listUnmergedPaths(worktreePath: string): Promise<string[]> {
@@ -201,14 +199,6 @@ async function commitMergedReview(review: MergeReview): Promise<string> {
   return commit;
 }
 
-async function treesEqual(repository: RepositoryPaths, left: string, right: string): Promise<boolean> {
-  const [leftTree, rightTree] = await Promise.all([
-    resolveTree(repository, left),
-    resolveTree(repository, right),
-  ]);
-  return leftTree === rightTree;
-}
-
 async function finalizeMergeReview(review: MergeReview): Promise<FinalizedMergeReview> {
   const mergedCommit = await commitMergedReview(review);
   const [beforeTree, afterTree] = await Promise.all([
@@ -222,22 +212,8 @@ async function finalizeMergeReview(review: MergeReview): Promise<FinalizedMergeR
 
   try {
     await removeReviewWorktree(review);
-    const checkRef = `refs/pi-remote-handoff/review-check-${randomUUID()}`;
-    try {
-      const current = await createSnapshot(
-        review.repository,
-        review.localDir,
-        checkRef,
-        "pi-remote-handoff merge review file check",
-        review.handoffCommit,
-        review.includedPaths,
-      );
-      if (!(await treesEqual(review.repository, current, review.localSnapshotCommit))) {
-        throw new LocalFilesChangedError();
-      }
-    } finally {
-      await deleteRef(review.repository, checkRef);
-    }
+    const current = await snapshotTree(review.repository, review.localDir, review.handoffCommit, review.includedPaths);
+    if (current !== beforeTree) throw new LocalFilesChangedError();
     await checkApplyPatch(review.repository, patch);
     return {
       resultCommit: review.resultCommit,
@@ -265,95 +241,26 @@ async function discardMergeReview(review: MergeReview): Promise<void> {
   }
 }
 
-function executingPiCommand(): string {
-  const command = process.argv[1];
-  if (!command) throw new Error("Cannot identify the executing Pi command.");
-  return command;
-}
-
-function spawnReviewPi(options: {
-  command: string;
-  cwd: string;
-  sessionFile: string;
-  controlDirectory: string;
-  prompt: string | undefined;
-  trustMode: "--approve" | "--no-approve";
-  agentDir: string;
-}): Promise<ReviewPiExit> {
+function reviewPiEnvironment(controlDirectory: string, agentDir: string): NodeJS.ProcessEnv {
   const environment = { ...process.env };
   for (const name of Object.keys(environment)) {
     if (name === "PI_SIMPLE_SUBAGENT" || name.startsWith("PI_SIMPLE_SUBAGENT_")) {
       delete environment[name];
     }
   }
-
-  return new Promise((resolvePromise) => {
-    const args = [
-      options.trustMode,
-      "--session",
-      options.sessionFile,
-      "--extension",
-      companionPath,
-    ];
-    if (options.prompt !== undefined) args.push("--", options.prompt);
-
-    const child = spawn(
-      options.command,
-      args,
-      {
-        cwd: options.cwd,
-        env: {
-          ...environment,
-          PI_REMOTE_HANDOFF_REVIEW: "1",
-          PI_REMOTE_HANDOFF_REVIEW_CONTROL: options.controlDirectory,
-          PI_CODING_AGENT_DIR: options.agentDir,
-        },
-        stdio: "inherit",
-      },
-    );
-    let started = false;
-    child.once("spawn", () => {
-      started = true;
-    });
-    child.once("error", (error) => resolvePromise({ started, error }));
-    child.once("exit", (code, signal) => {
-      if (code === 0) {
-        resolvePromise({ started });
-        return;
-      }
-      if (signal) {
-        resolvePromise({ started, error: new Error(`Merge review Pi was terminated by ${signal}.`) });
-        return;
-      }
-      resolvePromise({ started, error: new Error(`Merge review Pi exited with status ${code}.`) });
-    });
-  });
+  return {
+    ...environment,
+    PI_REMOTE_HANDOFF_REVIEW: "1",
+    PI_REMOTE_HANDOFF_REVIEW_CONTROL: controlDirectory,
+    PI_CODING_AGENT_DIR: agentDir,
+  };
 }
 
-async function attachReviewTerminal(
-  ctx: ExtensionCommandContext,
-  options: Parameters<typeof spawnReviewPi>[0],
-): Promise<ReviewPiExit> {
-  if (ctx.mode !== "tui") throw new Error("Merge review requires Pi's interactive TUI.");
-
-  return ctx.ui.custom<ReviewPiExit>((tui, _theme, _keybindings, done) => {
-    tui.stop();
-    process.stdout.write("\u001b[2J\u001b[H");
-
-    void (async () => {
-      let result: ReviewPiExit;
-      try {
-        result = await spawnReviewPi(options);
-      } catch (error) {
-        result = { started: false, error: asError(error) };
-      } finally {
-        tui.start();
-        tui.requestRender(true);
-      }
-      done(result);
-    })();
-    return { render: () => [], invalidate: () => {} };
-  });
+function reviewExitProblem(exit: TerminalChildExit): string | undefined {
+  if (exit.error) return exit.error.message;
+  if (exit.signal) return `Merge review Pi was terminated by ${exit.signal}.`;
+  if (exit.code !== 0) return `Merge review Pi exited with status ${exit.code}.`;
+  return undefined;
 }
 
 async function readReviewOutcome(controlDirectory: string): Promise<ReviewOutcome | undefined> {
@@ -438,16 +345,16 @@ export async function runInteractiveMergeReview(
       options.expectedSessionId,
     );
 
+    const environment = reviewPiEnvironment(controlDirectory, agentDir);
+    const trustMode = options.ctx.isProjectTrusted() ? "--approve" : "--no-approve";
     let prompt: string | undefined = reviewPrompt;
     while (true) {
-      const exit = await attachReviewTerminal(options.ctx, {
-        command: executingPiCommand(),
+      const args = [trustMode, "--session", reviewSession.path, "--extension", companionPath];
+      if (prompt !== undefined) args.push("--", prompt);
+      const pi = piInvocation(args);
+      const exit = await runInTerminal(options.ctx, pi.command, pi.args, {
         cwd: review.worktreePath,
-        sessionFile: reviewSession.path,
-        controlDirectory,
-        prompt,
-        trustMode: options.ctx.isProjectTrusted() ? "--approve" : "--no-approve",
-        agentDir,
+        env: environment,
       });
       if (exit.started) prompt = undefined;
 
@@ -455,8 +362,9 @@ export async function runInteractiveMergeReview(
       if (outcome === "complete") break;
       if (outcome === "leave") return { kind: "left" };
 
-      const detail = exit.error
-        ? `Merge review stopped: ${exit.error.message}\n\n`
+      const problem = reviewExitProblem(exit);
+      const detail = problem
+        ? `Merge review stopped: ${problem}\n\n`
         : "Pi exited without choosing Complete or Leave. ";
       const discard = await options.ctx.ui.confirm(
         "Leave merge review?",
@@ -466,7 +374,6 @@ export async function runInteractiveMergeReview(
     }
 
     finalized = await finalizeMergeReview(review);
-    await deleteFinalizedRefs(review.repository, finalized);
     const completedSession = {
       path: reviewSession.path,
       sha256: await hashFileSha256(reviewSession.path),
@@ -483,6 +390,7 @@ export async function runInteractiveMergeReview(
         patchSha256: finalized.patchSha256,
       },
       reviewSession: completedSession,
+      refs: [finalized.localSnapshotRef, finalized.mergedRef],
     };
   } catch (error) {
     failure = error;

@@ -8,12 +8,10 @@ It is a personal interactive tool. Remote machine setup is manual, and remote Pi
 
 The local machine needs:
 
-- Git
-- Herdr 0.8.2 or newer
+- Git with `less` as its pager (full Git for Windows includes it, MinGit does not)
 - Node.js 22.19.0 or newer
 - Pi
 - npm
-- `tar`
 - OpenSSH `ssh` and `scp`
 
 The remote host needs:
@@ -24,9 +22,13 @@ The remote host needs:
 - npm and required registry access
 - `tar`
 - `flock`
+- `pkill`
 - OpenSSH `ssh`
+- Herdr 0.8.2 or newer, or what Remote Handoff needs to install it: `curl`, `awk`, one of `sha256sum`, `shasum`, or `openssl`, and access to `herdr.dev` and GitHub
 
 Both `ssh` and `scp` must reach the host in batch mode. Saved targets use `host` or `user@host` syntax.
+
+On macOS and Linux, Remote Handoff reuses one SSH connection per host through OpenSSH connection sharing. The control socket lives in a private directory under the system temporary directory and closes 60 seconds after the last use. Windows OpenSSH does not support connection sharing, so each remote step opens its own connection.
 
 The project can be a Git repository with at least one commit or an ordinary directory. For an ordinary directory, Remote Handoff treats Pi's current working directory as the project root and keeps private Git metadata under the Pi agent directory. It does not create `.git` in the project.
 
@@ -34,7 +36,7 @@ The project can be a Git repository with at least one commit or an ordinary dire
 
 Install browser tools and other task-specific programs on the remote host before starting a handoff. Remote Handoff does not install machine dependencies.
 
-When the remote host has no matching Herdr release, Remote Handoff downloads the local version for the remote platform from Herdr's release manifest, verifies its SHA-256 checksum, and installs it under `~/.pi-remote-handoff/herdr`. It does not replace the host's normal Herdr installation.
+Remote Handoff looks for Herdr 0.8.2 or newer on the remote `PATH`, in `~/.local/bin/herdr`, and in `~/.pi-remote-handoff/herdr/herdr`. When none exists, it runs Herdr's official installer with `HERDR_INSTALL_DIR=~/.pi-remote-handoff/herdr`. The installer downloads the latest stable release and verifies its SHA-256 checksum. It does not replace the host's normal Herdr installation.
 
 ## Install
 
@@ -87,7 +89,7 @@ One project can have one handoff. Remote Handoff keys Git projects by their Git 
 
 ## Start a handoff
 
-`start` checks the project, local Herdr, and the selected remote host. It uses the only saved host automatically, asks when several hosts exist, or prompts for a host when none exist.
+`start` checks the project and the selected remote host. It uses the only saved host automatically, asks when several hosts exist, or prompts for a host when none exist.
 
 Remote Handoff transfers:
 
@@ -100,9 +102,11 @@ Remote Handoff transfers:
 
 Ignored files stay local.
 
+The portable profile follows `.gitignore` too. Remote Handoff always copies each configured package, resource, and agent-directory entry. Inside a directory that belongs to a Git work tree, it copies only the files that `git ls-files --cached --others --exclude-standard` lists for that work tree. Tracked files are always copied. Symlinked directories use the ignore rules of the repository they point into. Directories outside Git are copied in full, apart from `node_modules` and `.git`. A local package whose built output is gitignored, such as `dist/`, arrives without that output.
+
 An ordinary-directory handoff continues using its private Git metadata if someone runs `git init` in the project while the handoff is active. Remote Handoff never reads or removes that new `.git` directory.
 
-Remote Handoff prepares the local snapshot, then reserves the conversation while it uploads the handoff, prepares the remote private profile, and starts Pi. It records a unique launch ID before asking the remote host to start Pi. The remote launch records the same ID under `flock` before starting Herdr or Pi.
+Remote Handoff prepares the local snapshot, then reserves the conversation while it uploads the handoff, prepares the remote private profile, and starts Pi. The upload is one compressed SSH stream. Profile file contents are stored by SHA-256 in `~/.pi-remote-handoff/profile-objects` on the remote host, so later handoffs upload only files whose contents changed. It records a unique launch ID before asking the remote host to start Pi. The remote launch records the same ID under `flock` before starting Herdr or Pi.
 
 The conversation remains locally reserved while launch status is uncertain. Local prompts cannot continue that conversation during this period. Remote Handoff transfers ownership only after it confirms the matching remote launch. A lost SSH acknowledgment is reconciled by launch ID and cannot start a second Pi process.
 
@@ -120,6 +124,8 @@ Run `/remote-handoff` inside remote Pi to:
 
 Detach returns to the local control conversation. Other local Pi conversations and local repository edits remain available. The handed-off conversation itself stays blocked locally.
 
+Attach uses Herdr's own terminal client over `ssh -t`. Herdr's `ctrl+b q` also detaches, and a literal `ctrl+b` needs `ctrl+b ctrl+b`. When local Pi runs inside a local Herdr session, local Herdr receives `ctrl+b` first, so use `/remote-handoff` in remote Pi to detach.
+
 The control conversation watches detached work and reports when a result is prepared or when Pi stops without one.
 
 `stop and prepare result` aborts an active turn when needed, shuts down Pi, and captures the current conversation and repository state. A failed Pi process also prepares partial work when capture succeeds.
@@ -130,7 +136,7 @@ If graceful stop times out, Remote Handoff offers force stop. Force stop ends th
 
 ## Review and apply
 
-`view diff` shows the changes between the handoff snapshot and the prepared result. Closing the viewer returns to the lifecycle menu. It does not prompt for apply and does not touch the real index or worktree.
+`view diff` shows the changes between the handoff snapshot and the prepared result in `less` through `git diff`. Press `q` to return to the lifecycle menu. It does not prompt for apply and does not touch the real index or worktree.
 
 When local files still match the handoff snapshot, apply builds a direct binary patch.
 
@@ -146,7 +152,7 @@ When local files changed, Remote Handoff starts merge review:
 
 Leaving merge review deletes the temporary worktree and conversation copy. The prepared result remains available.
 
-Remote Handoff shows the final apply-only patch and requires confirmation. It checks the local snapshot again after confirmation. If local files changed during review, it discards the attempt and restarts against the latest files.
+Remote Handoff shows the final apply-only changes in `less` and requires confirmation. It checks the local snapshot again after confirmation. If local files changed during review, it discards the attempt and restarts against the latest files.
 
 After confirmation, Remote Handoff returns credentials, records a recoverable apply plan, returns the reviewed conversation, and applies the patch without updating the Git index. Existing staged state stays staged. Incoming changes remain unstaged.
 
@@ -170,7 +176,11 @@ Apply and discard merge returned credentials by provider against the handoff bas
 
 Credential fields from two versions are never combined.
 
-The exact local Pi version is installed under `~/.pi-remote-handoff/runtime` on the remote host. Workspaces on that host share the runtime and portable package dependency caches. Each handoff still gets a fresh private profile.
+The exact local Pi version is installed under `~/.pi-remote-handoff/runtime/<version>` on the remote host. Workspaces on that host share each runtime version, the profile object store, and the portable package dependency cache in `~/.pi-remote-handoff/package-dependencies`. Installing a new version leaves other versions untouched. Each handoff still gets a fresh private profile copied from the object store.
+
+A dependency cache entry is keyed by the package manifest without `scripts`, its `package-lock.json`, `npm-shrinkwrap.json`, and `.npmrc`, and the remote Node, npm, and OS versions. Other file changes in the package reuse the entry. Packages that use local-path dependencies, `link:` dependencies, or npm workspaces are keyed by the contents of every portable package instead. Cached `node_modules` trees are hard-linked into the workspace when the file system allows it.
+
+`profile-objects` and `package-dependencies` are caches. Remote Handoff never prunes them. Delete them only while no handoff uses the host.
 
 ## Security and transfer scope
 

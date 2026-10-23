@@ -8,6 +8,7 @@ import {
 } from '@earendil-works/pi-coding-agent'
 
 const providerNamePattern = /^[A-Za-z0-9._-]+$/
+const promptSectionName = 'provider_system_prompt_append'
 
 type PromptAppend = {
   text: string
@@ -63,6 +64,9 @@ export default function providerSystemPromptAppend(pi: ExtensionAPI) {
   })
 
   pi.on('before_agent_start', async (event, ctx) => {
+    const sections = event.systemPromptOptions.sections
+    delete sections[promptSectionName]
+
     const current = getCurrentAppends(ctx)
     if (!current) return
 
@@ -71,11 +75,7 @@ export default function providerSystemPromptAppend(pi: ExtensionAPI) {
       .filter((text): text is string => text !== undefined && text.length > 0)
       .join('\n\n')
 
-    if (appendText.length === 0) return
-
-    return {
-      systemPrompt: `${event.systemPrompt}\n\n${appendText}`,
-    }
+    if (appendText.length > 0) sections[promptSectionName] = appendText
   })
   pi.registerCommand('provider-system-prompt-append', {
     description: 'Show the current provider and model APPEND_SYSTEM file status',

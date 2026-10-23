@@ -1,8 +1,10 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
+const providers = new Set(['anthropic', 'cpa-claude'])
+
 export default function (pi: ExtensionAPI) {
   pi.on('before_provider_request', (event, ctx) => {
-    if (ctx.model?.provider !== 'anthropic' || ctx.model.id !== 'claude-fable-5-1') return
+    if (ctx.model?.id !== 'claude-fable-5-1' || !providers.has(ctx.model.provider)) return
 
     const payload = event.payload
     if (typeof payload !== 'object' || payload === null || !('thinking' in payload)) return

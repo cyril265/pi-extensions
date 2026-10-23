@@ -54,7 +54,8 @@ function parseRequest(line: string, expectedToken: string): ClientRequest {
   if (value.token !== expectedToken) throw new Error('Authentication failed')
   if (value.method !== 'dispatch' && value.method !== 'run') throw new Error('Unknown method')
   if (!Check(isolatedAgentsSchema, value.params)) {
-    const [error] = Errors(isolatedAgentsSchema, value.params)
+    const errors = [...Errors(isolatedAgentsSchema, value.params)]
+    const error = errors.find(candidate => candidate.keyword !== 'boolean') ?? errors[0]
     throw new Error(`agents${error.instancePath}: ${error.message}`)
   }
   return { method: value.method, agents: value.params }

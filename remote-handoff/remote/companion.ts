@@ -1,5 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { chmodSync, closeSync, constants, existsSync, lstatSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { isAbsolute, join } from "node:path";
 
 export default function registerRemoteCompanion(pi: ExtensionAPI) {
@@ -16,18 +18,18 @@ export default function registerRemoteCompanion(pi: ExtensionAPI) {
   let timer: NodeJS.Timeout | undefined;
   let stopStarted = false;
 
-  const requestDetach = () => {
-    const fifo = join(control, "attachment-control");
-    const stat = lstatSync(fifo);
-    if (!stat.isFIFO() || stat.isSymbolicLink()) {
-      throw new Error("The Remote Handoff attachment control channel is invalid");
-    }
-    const descriptor = openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK);
-    try {
-      writeSync(descriptor, "detach\n");
-    } finally {
-      closeSync(descriptor);
-    }
+  const requestDetach = (): boolean => {
+    const session = process.env.HERDR_SESSION;
+    if (!session) throw new Error("HERDR_SESSION is required to detach");
+    const result = spawnSync(
+      "pkill",
+      ["-TERM", "-u", String(userInfo().uid), "-f", `session ${session} terminal attach`],
+      { encoding: "utf8" },
+    );
+    if (result.error) throw result.error;
+    if (result.status === 1) return false;
+    if (result.status !== 0) throw new Error(`pkill failed (${result.status}): ${result.stderr}`);
+    return true;
   };
 
   pi.registerCommand("remote-handoff", {
@@ -46,7 +48,7 @@ export default function registerRemoteCompanion(pi: ExtensionAPI) {
         return;
       }
       if (selected === detach) {
-        requestDetach();
+        if (!requestDetach()) ctx.ui.notify("No local terminal is attached.", "warning");
         return;
       }
       if (await ctx.ui.confirm("Stop remote work?", "Abort the active turn, stop Pi, and prepare the result?")) {

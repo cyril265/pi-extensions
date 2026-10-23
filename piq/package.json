@@ -7,9 +7,8 @@
   },
   "type": "module",
   "bin": {
-    "pil": "./bin/piq.ts",
-    "pic": "./bin/piq.ts",
-    "pim": "./bin/piq.ts"
+    "piq": "./bin/piq.ts",
+    "pix": "./bin/pix.ts"
   },
   "scripts": {
     "build": "mkdir -p build && cc -O2 -Wall -Wextra -o build/tiocsti native/tiocsti.c",

@@ -30,7 +30,10 @@ global counterpart.
 The extension reads the current provider and model for each `before_agent_start` event. After `/model`
 switches, the next turn uses the new provider and model append files.
 
-The appends are applied idempotently to each fresh system prompt. They do not accumulate duplicates.
+The appends are written to the structured `provider_system_prompt_append` system prompt section, which Pi
+renders as `<provider_system_prompt_append>` after its built-in sections. The section is rebuilt from the
+current files on each turn, so it does not accumulate duplicates. When no append applies to the current
+model, the section is removed and Pi drops it from the transcript on the next turn.
 
 ## Command
 

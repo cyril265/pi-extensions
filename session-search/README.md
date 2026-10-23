@@ -32,13 +32,18 @@ the entry role, the line number, and a snippet around the match, followed by
 
 ## Session directory
 
-1. The directory reported by the session manager, when the session is persisted.
-2. `PI_CODING_AGENT_SESSION_DIR`.
-3. `sessionDir` from `settings.json` in the agent directory.
-4. `<agent dir>/sessions`.
+Normal persisted sessions live in project-specific directories below one sessions root. The
+extension searches that root, so results can come from any working directory.
 
-The agent directory is `PI_CODING_AGENT_DIR` or `~/.pi/agent`. Relative paths resolve against the
-session cwd and `~` is expanded.
+The configured root is resolved in this order:
+
+1. `PI_CODING_AGENT_SESSION_DIR`.
+2. `sessionDir` from `settings.json` in the agent directory.
+3. `<agent dir>/sessions`.
+
+A custom directory reported by the session manager, such as one passed with `--session-dir`, takes
+precedence when it is outside the configured root. The agent directory is `PI_CODING_AGENT_DIR` or
+`~/.pi/agent`. Relative paths resolve against the session cwd and `~` is expanded.
 
 ## Notes
 

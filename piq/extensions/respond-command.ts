@@ -21,10 +21,10 @@ export default function respondCommandExtension(pi: ExtensionAPI) {
     name: 'respond_command',
     label: 'Respond Command',
     description:
-      'Final response tool for pic. Prints an optional explanation and places a one-line shell command into the terminal input field without pressing Enter.',
-    promptSnippet: 'Finalize pic command mode with a shell command and optional explanation',
+      'Final response tool for pix. Prints an optional explanation and places a one-line shell command into the terminal input field without pressing Enter.',
+    promptSnippet: 'Finalize pix command mode with a shell command and optional explanation',
     promptGuidelines: [
-      'Use respond_command for every final response in pic command mode instead of answering normally.',
+      'Use respond_command for every final response in pix command mode instead of answering normally.',
       'respond_command.command must be exactly one shell command line and must not contain a newline.',
       'respond_command.explanation is optional; omit it unless a short clarification is useful.',
       'After calling respond_command successfully, do not produce additional assistant text.',

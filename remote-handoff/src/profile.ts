@@ -1,10 +1,13 @@
 import { execFile } from "node:child_process";
-import { chmod, cp, lstat, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { basename, dirname, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hasErrorCode } from "./errors.js";
 import { isRecord } from "./json.js";
 import { isPathEqualOrInside } from "./paths.js";
+import type { TransferObject } from "./transfer.js";
 
 const portableNames = [
   "APPEND_SYSTEM.md",
@@ -91,9 +94,31 @@ function parseSettings(contents: string): ProfileSettings {
 export interface BuildProfileOptions {
   agentDir: string;
   homeDir: string;
-  localDir: string;
   remoteProfileHome: string;
   excludedPackagePath?: string;
+}
+
+export interface PortableProfile {
+  manifest: Buffer;
+  objects: Map<string, TransferObject>;
+}
+
+type ProfileEntry =
+  | { path: string; type: "directory" }
+  | { path: string; type: "file"; mode: number; size: number; hash: string };
+
+interface PendingProfileFile {
+  path: string;
+  source: string;
+  mode: number;
+}
+
+const hashConcurrency = 8;
+
+interface IgnoreContext {
+  root: string;
+  included: Set<string>;
+  directories: Set<string>;
 }
 
 function sourceOf(setting: PackageSetting): string {
@@ -147,22 +172,175 @@ function portableName(index: number, source: string, usedNames: Set<string>): st
   return uniqueName;
 }
 
-async function copyTree(source: string, destination: string, excludedPaths: ReadonlySet<string> = new Set()): Promise<void> {
-  const root = resolve(source);
-  await mkdir(dirname(destination), { recursive: true });
-  await cp(source, destination, {
-    recursive: true,
-    dereference: true,
-    filter: async (candidate) => {
-      if (candidate !== root && ignoredDirectoryNames.has(basename(candidate))) return false;
-      if (excludedPaths.has(resolve(candidate))) return false;
-      try {
-        return !excludedPaths.has(await realpath(candidate));
-      } catch {
-        return true;
-      }
-    },
+function fileMode(mode: number): number {
+  return process.platform === "win32" ? 0o600 : mode & 0o700;
+}
+
+function hashFile(path: string): Promise<{ hash: string; size: number }> {
+  return new Promise((resolvePromise, reject) => {
+    const hash = createHash("sha256");
+    let size = 0;
+    createReadStream(path, { highWaterMark: 1024 * 1024 })
+      .on("data", (chunk) => {
+        const bytes = chunk as Buffer;
+        size += bytes.length;
+        hash.update(bytes);
+      })
+      .on("error", reject)
+      .on("end", () => resolvePromise({ hash: hash.digest("hex"), size }));
   });
+}
+
+function gitEnvironment(): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
+}
+
+function gitIgnoreContext(directory: string): Promise<IgnoreContext | null> {
+  return new Promise((resolvePromise) => {
+    execFile(
+      "git",
+      ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+      { cwd: directory, env: gitEnvironment(), encoding: "utf8", maxBuffer: 256 * 1024 * 1024 },
+      (error, stdout) => {
+        if (error) {
+          resolvePromise(null);
+          return;
+        }
+        const included = new Set<string>();
+        const directories = new Set<string>();
+        for (const listed of stdout.split("\0")) {
+          if (!listed) continue;
+          const path = (listed.endsWith("/") ? listed.slice(0, -1) : listed).normalize("NFC");
+          included.add(path);
+          for (let parent = posix.dirname(path); parent !== "."; parent = posix.dirname(parent)) {
+            if (directories.has(parent)) break;
+            directories.add(parent);
+          }
+        }
+        resolvePromise({ root: directory, included, directories });
+      },
+    );
+  });
+}
+
+class ProfileTree {
+  private readonly entries = new Map<string, ProfileEntry>();
+  private readonly objects = new Map<string, TransferObject>();
+  private readonly pending = new Map<string, PendingProfileFile>();
+  private readonly ignoreContexts = new Map<string, Promise<IgnoreContext | null>>();
+
+  hasDirectory(path: string): boolean {
+    return this.entries.get(path)?.type === "directory";
+  }
+
+  private ignoreContext(directory: string): Promise<IgnoreContext | null> {
+    let context = this.ignoreContexts.get(directory);
+    if (!context) {
+      context = gitIgnoreContext(directory);
+      this.ignoreContexts.set(directory, context);
+    }
+    return context;
+  }
+
+  addDirectory(path: string): void {
+    for (let current = path; current !== "." && current !== ""; current = posix.dirname(current)) {
+      if (this.entries.get(current)?.type === "directory") return;
+      this.entries.set(current, { path: current, type: "directory" });
+    }
+  }
+
+  addContent(path: string, content: Buffer, mode: number): void {
+    this.addDirectory(posix.dirname(path));
+    this.pending.delete(path);
+    const hash = createHash("sha256").update(content).digest("hex");
+    this.entries.set(path, { path, type: "file", mode, size: content.length, hash });
+    this.objects.set(hash, { hash, size: content.length, source: { content } });
+  }
+
+  async addTree(source: string, destination: string, excludedPaths: ReadonlySet<string> = new Set()): Promise<void> {
+    const root = resolve(source);
+    const visit = async (
+      candidate: string,
+      target: string,
+      location: string,
+      isSymbolicLink: boolean,
+      context: IgnoreContext | null,
+      ancestors: ReadonlySet<string>,
+    ): Promise<void> => {
+      const isRoot = candidate === root;
+      if (!isRoot && ignoredDirectoryNames.has(basename(candidate))) return;
+      if (excludedPaths.size > 0) {
+        if (excludedPaths.has(resolve(candidate))) return;
+        try {
+          if (excludedPaths.has(await realpath(candidate))) return;
+        } catch (error) {
+          if (hasErrorCode(error, "ENOENT")) return;
+        }
+      }
+      let stats;
+      try {
+        stats = await stat(candidate);
+      } catch (error) {
+        if (hasErrorCode(error, "ENOENT")) return;
+        throw error;
+      }
+      let listed = false;
+      if (!isRoot && context) {
+        const path = relative(context.root, location).split(sep).join("/").normalize("NFC");
+        listed = context.included.has(path);
+        if (!listed && (isSymbolicLink || !stats.isDirectory() || !context.directories.has(path))) return;
+      }
+      if (stats.isDirectory()) {
+        const identity = `${stats.dev}:${stats.ino}`;
+        if (stats.ino !== 0 && ancestors.has(identity)) {
+          throw new Error(`Portable Pi profile source contains a directory cycle: ${candidate}`);
+        }
+        const opensContext = isRoot || isSymbolicLink || listed;
+        const real = opensContext ? await realpath(candidate) : location;
+        const childContext = opensContext ? await this.ignoreContext(real) : context;
+        this.addDirectory(target);
+        const nested = new Set(ancestors).add(identity);
+        const children = await readdir(candidate, { withFileTypes: true });
+        await Promise.all(children.map((child) => visit(
+          join(candidate, child.name),
+          posix.join(target, child.name),
+          join(real, child.name),
+          child.isSymbolicLink(),
+          childContext,
+          nested,
+        )));
+        return;
+      }
+      if (stats.isFile()) {
+        this.addDirectory(posix.dirname(target));
+        this.pending.set(target, { path: target, source: candidate, mode: fileMode(stats.mode) });
+        return;
+      }
+      throw new Error(`Unsupported portable Pi profile entry: ${candidate}`);
+    };
+    await visit(root, destination, root, false, null, new Set());
+  }
+
+  async build(): Promise<PortableProfile> {
+    const pending = [...this.pending.values()];
+    let next = 0;
+    const worker = async () => {
+      while (next < pending.length) {
+        const file = pending[next++]!;
+        const { hash, size } = await hashFile(file.source);
+        this.entries.set(file.path, { path: file.path, type: "file", mode: file.mode, size, hash });
+        if (!this.objects.has(hash)) this.objects.set(hash, { hash, size, source: { path: file.source } });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(hashConcurrency, pending.length) }, worker));
+    const entries = [...this.entries.values()].sort((left, right) =>
+      left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+    );
+    return {
+      manifest: Buffer.from(`${JSON.stringify({ version: 1, entries })}\n`),
+      objects: this.objects,
+    };
+  }
 }
 
 async function hasPackageManifest(directory: string): Promise<boolean> {
@@ -208,23 +386,6 @@ async function portableSource(absolute: string, isDirectory: boolean) {
   return { root: absolute, suffix: "", installDependencies: false };
 }
 
-function createArchive(sourceDirectory: string, archivePath: string): Promise<void> {
-  return new Promise((resolvePromise, reject) => {
-    execFile(
-      "tar",
-      ["-czf", archivePath, "-C", sourceDirectory, "."],
-      { encoding: "utf8" },
-      (error, stdout, stderr) => {
-        if (error) {
-          reject(new Error(`tar failed (${error.code ?? "unknown"}): ${stderr || stdout}`.trim()));
-          return;
-        }
-        resolvePromise();
-      },
-    );
-  });
-}
-
 async function samePath(left: string, right: string | undefined): Promise<boolean> {
   if (!right) return false;
   try {
@@ -238,17 +399,13 @@ function isPattern(entry: string): boolean {
   return /^[!+-]/.test(entry) || entry.includes("*") || entry.includes("?");
 }
 
-export async function buildProfile(options: BuildProfileOptions): Promise<string> {
+export async function buildProfile(options: BuildProfileOptions): Promise<PortableProfile> {
   const agentDir = resolve(options.agentDir);
   const homeDir = resolve(options.homeDir);
-  const stage = join(options.localDir, "profile-stage");
-  const archivePath = join(options.localDir, "profile.tar.gz");
-  const stageHome = join(stage, "home");
-  const stageAgent = join(stageHome, ".pi", "agent");
-
-  await rm(stage, { recursive: true, force: true });
-  await rm(archivePath, { force: true });
-  await mkdir(stageAgent, { recursive: true });
+  const stageHome = "home";
+  const stageAgent = posix.join(stageHome, ".pi", "agent");
+  const tree = new ProfileTree();
+  tree.addDirectory(stageAgent);
 
   const settings = parseSettings(await readFile(join(agentDir, "settings.json"), "utf8"));
   const localAuth = join(agentDir, "auth.json");
@@ -283,10 +440,10 @@ export async function buildProfile(options: BuildProfileOptions): Promise<string
     if (await samePath(absolute, options.excludedPackagePath)) continue;
 
     const portable = await portableSource(absolute, sourceStat.isDirectory());
-    const relativeDestination = join(".pi", "agent", "local-packages", portableName(index, portable.root, packageNames));
-    await copyTree(portable.root, join(stageHome, relativeDestination), localSecrets);
-    const remoteSource = relative(stageAgent, join(stageHome, relativeDestination, portable.suffix));
-    rewrittenPackages.push(withSource(entry, remoteSource));
+    const name = portableName(index, portable.root, packageNames);
+    const relativeDestination = posix.join(".pi", "agent", "local-packages", name);
+    await tree.addTree(portable.root, posix.join(stageHome, relativeDestination), localSecrets);
+    rewrittenPackages.push(withSource(entry, posix.join("local-packages", name, portable.suffix)));
     if (portable.installDependencies) packageDirectories.push(relativeDestination);
   }
   settings.packages = rewrittenPackages;
@@ -313,7 +470,7 @@ export async function buildProfile(options: BuildProfileOptions): Promise<string
         throw error;
       }
       if (isPathEqualOrInside(conventionalRoot, absolute)) {
-        rewrittenEntries.push(relative(agentDir, absolute));
+        rewrittenEntries.push(relative(agentDir, absolute).split(sep).join("/"));
         continue;
       }
 
@@ -322,22 +479,17 @@ export async function buildProfile(options: BuildProfileOptions): Promise<string
         throw new Error(`Configured Pi ${resourceType} path contains the agent directory: ${portable.root}`);
       }
 
-      const relativeDestination = join(
-        ".pi",
-        "agent",
-        "local-resources",
-        resourceType,
-        portableName(index, portable.root, resourceNames),
-      );
-      await copyTree(portable.root, join(stageHome, relativeDestination));
-      rewrittenEntries.push(relative(stageAgent, join(stageHome, relativeDestination, portable.suffix)));
+      const name = portableName(index, portable.root, resourceNames);
+      const relativeDestination = posix.join(".pi", "agent", "local-resources", resourceType, name);
+      await tree.addTree(portable.root, posix.join(stageHome, relativeDestination));
+      rewrittenEntries.push(posix.join("local-resources", resourceType, name, portable.suffix));
       if (portable.installDependencies) packageDirectories.push(relativeDestination);
     }
     if (await hasPackageManifest(conventionalRoot)) {
-      packageDirectories.push(join(".pi", "agent", resourceType));
+      packageDirectories.push(posix.join(".pi", "agent", resourceType));
     }
     for (const packageDirectory of await packageManifestChildren(conventionalRoot)) {
-      packageDirectories.push(join(".pi", "agent", resourceType, basename(packageDirectory)));
+      packageDirectories.push(posix.join(".pi", "agent", resourceType, basename(packageDirectory)));
     }
     settings[resourceType] = rewrittenEntries;
   }
@@ -345,7 +497,7 @@ export async function buildProfile(options: BuildProfileOptions): Promise<string
   const sharedSkills = join(homeDir, ".agents", "skills");
   try {
     await lstat(sharedSkills);
-    await copyTree(sharedSkills, join(stageHome, ".agents", "skills"));
+    await tree.addTree(sharedSkills, posix.join(stageHome, ".agents", "skills"));
     settings.skills = [...(settings.skills ?? []), `${options.remoteProfileHome}/.agents/skills`];
   } catch (error) {
     if (!hasErrorCode(error, "ENOENT")) throw error;
@@ -362,19 +514,22 @@ export async function buildProfile(options: BuildProfileOptions): Promise<string
       if (hasErrorCode(error, "ENOENT")) continue;
       throw error;
     }
-    await copyTree(source, join(stageAgent, name));
+    await tree.addTree(source, posix.join(stageAgent, name));
   }
 
   const rewrittenSettings = rewriteHome(settings, homeDir, options.remoteProfileHome);
-  await writeFile(join(stageAgent, "settings.json"), `${JSON.stringify(rewrittenSettings, null, 2)}\n`, {
-    mode: 0o600,
-  });
-  await writeFile(
-    join(stage, "profile.json"),
-    `${JSON.stringify({ version: 1, packageDirectories: [...new Set(packageDirectories)] }, null, 2)}\n`,
+  tree.addContent(
+    posix.join(stageAgent, "settings.json"),
+    Buffer.from(`${JSON.stringify(rewrittenSettings, null, 2)}\n`),
+    0o600,
   );
-  await createArchive(stage, archivePath);
-  await chmod(archivePath, 0o600);
-  await rm(stage, { recursive: true, force: true });
-  return archivePath;
+  const portablePackageDirectories = [...new Set(packageDirectories)].filter((directory) =>
+    tree.hasDirectory(posix.join(stageHome, directory)),
+  );
+  tree.addContent(
+    "profile.json",
+    Buffer.from(`${JSON.stringify({ version: 1, packageDirectories: portablePackageDirectories }, null, 2)}\n`),
+    0o600,
+  );
+  return tree.build();
 }

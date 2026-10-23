@@ -54,7 +54,7 @@ function resolveGitPath(repoRoot: string, value: string): string {
   return isAbsolute(value) ? resolve(value) : resolve(repoRoot, value);
 }
 
-function repositoryEnvironment(repository: RepositoryPaths, env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv | undefined {
+export function repositoryEnvironment(repository: RepositoryPaths, env: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   if (repository.repositoryKind === "git") return env;
   return {
     ...env,
@@ -68,11 +68,10 @@ export function repositoryGit(
   args: string[],
   options: Omit<GitOptions, "cwd"> = {},
 ): Promise<string> {
-  const env = repositoryEnvironment(repository, options.env);
   return git(args, {
     ...options,
     cwd: repository.repoRoot,
-    ...(env ? { env } : {}),
+    env: repositoryEnvironment(repository, options.env),
   });
 }
 
@@ -236,20 +235,17 @@ export async function rejectUnsupportedRepository(repository: RepositoryPaths): 
   }
 }
 
-export async function createSnapshot(
+export async function snapshotTree(
   repository: RepositoryPaths,
   localDir: string,
-  ref: string,
-  message: string,
-  parentCommit?: string,
+  baseCommit: string,
   includedPaths: readonly string[] = [],
 ): Promise<string> {
   await mkdir(localDir, { recursive: true, mode: 0o700 });
   const index = join(localDir, `index-${randomUUID()}`);
   const env = { GIT_INDEX_FILE: index };
   try {
-    const parent = await resolveCommit(repository, parentCommit ?? "HEAD");
-    await repositoryGit(repository, ["read-tree", parent], { env });
+    await repositoryGit(repository, ["read-tree", baseCommit], { env });
     const addPaths = repository.repositoryKind === "directory"
       ? [".", ":(top,exclude).git"]
       : ["."];
@@ -266,17 +262,28 @@ export async function createSnapshot(
     if (/^160000 /m.test(await repositoryGit(repository, ["ls-files", "--stage"], { env }))) {
       throw new Error("Git submodules and embedded repositories are not supported by pi-remote-handoff.");
     }
-    const tree = await repositoryGit(repository, ["write-tree"], { env });
-    const commit = await repositoryGit(repository, ["commit-tree", tree, "-p", parent], {
-      env,
-      input: `${message}\n`,
-    });
-    await repositoryGit(repository, ["update-ref", ref, commit]);
-    return commit;
+    return await repositoryGit(repository, ["write-tree"], { env });
   } finally {
     await rm(index, { force: true });
     await rm(`${index}.lock`, { force: true });
   }
+}
+
+export async function createSnapshot(
+  repository: RepositoryPaths,
+  localDir: string,
+  ref: string,
+  message: string,
+  parentCommit?: string,
+  includedPaths: readonly string[] = [],
+): Promise<string> {
+  const parent = await resolveCommit(repository, parentCommit ?? "HEAD");
+  const tree = await snapshotTree(repository, localDir, parent, includedPaths);
+  const commit = await repositoryGit(repository, ["commit-tree", tree, "-p", parent], {
+    input: `${message}\n`,
+  });
+  await repositoryGit(repository, ["update-ref", ref, commit]);
+  return commit;
 }
 
 export async function resolveTree(repository: RepositoryPaths, revision: string): Promise<string> {
@@ -290,12 +297,6 @@ export async function createBundle(repository: RepositoryPaths, bundlePath: stri
 export async function importResult(repository: RepositoryPaths, bundlePath: string, ref: string): Promise<string> {
   await repositoryGit(repository, ["fetch", "--force", bundlePath, `${ref}:${ref}`]);
   return resolveCommit(repository, ref);
-}
-
-export async function diff(repository: RepositoryPaths, from: string, to: string): Promise<string> {
-  return await repositoryGit(repository, ["--no-pager", "diff", "--stat", from, to])
-    + "\n\n"
-    + await repositoryGit(repository, ["--no-pager", "diff", "--binary", from, to]);
 }
 
 export async function createBinaryPatch(repository: RepositoryPaths, from: string, to: string): Promise<string> {

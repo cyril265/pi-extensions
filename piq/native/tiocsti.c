@@ -2,7 +2,7 @@
  * tiocsti — place one line of text into the controlling terminal's input
  * queue via the TIOCSTI ioctl, without echoing and without pressing Enter.
  *
- * Used by `pic` command mode to fill the shell prompt with a suggested
+ * Used by `pix` command mode to fill the shell prompt with a suggested
  * command. Replaces the previous python3 helper so piq has no python
  * runtime dependency.
  *

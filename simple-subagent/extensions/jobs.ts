@@ -36,6 +36,7 @@ type Joiner = {
 type InternalJob = SubagentJob & {
   started: boolean
   settled: boolean
+  completed: boolean
   failureResult: ((error: unknown, aborted: boolean) => SubagentJobResult) | undefined
   resolveSettle: () => void
   joiners: Joiner[]
@@ -44,7 +45,8 @@ type InternalJob = SubagentJob & {
 type JobRegistryEvents = {
   onProgress?: (job: SubagentJob, details: SubagentResultDetails) => void
   onSettled?: (job: SubagentJob, result: SubagentJobResult) => void
-  onPush?: (job: SubagentJob, result: SubagentJobResult) => void
+  onPush?: (job: SubagentJob, result: SubagentJobResult) => unknown
+  onPushError?: (job: SubagentJob, error: unknown) => void
   onDelivered?: (job: SubagentJob) => void
 }
 
@@ -104,6 +106,7 @@ export class JobRegistry {
       controller: new AbortController(),
       started: false,
       settled: false,
+      completed: false,
       failureResult,
       resolveSettle,
       joiners: [],
@@ -201,7 +204,7 @@ export class JobRegistry {
 
   async waitForPending(): Promise<void> {
     while (true) {
-      const pending = this.listRunning()
+      const pending = [...this.jobs.values()].filter(job => !job.completed)
       if (pending.length === 0) return
       await Promise.all(pending.map(job => job.settle))
     }
@@ -209,8 +212,9 @@ export class JobRegistry {
 
   async shutdown(): Promise<void> {
     this.suppressDelivery = true
-    const pending = [...this.jobs.values()].filter(job => !job.settled)
+    const pending = [...this.jobs.values()].filter(job => !job.completed)
     for (const job of pending) {
+      if (job.settled) continue
       job.controller.abort('Session shutdown')
       if (!job.started) {
         this.finalize(job, job.failureResult!(job.controller.signal.reason, true))
@@ -243,10 +247,28 @@ export class JobRegistry {
         joiner.resolve(result)
       }
       this.completeDelivery(job)
+      this.completeSettlement(job)
     } else if (!this.suppressDelivery && this.events.onPush) {
-      this.events.onPush(job, result)
-      this.completeDelivery(job)
+      void this.push(job, result)
+    } else {
+      this.completeSettlement(job)
     }
+  }
+
+  private async push(job: InternalJob, result: SubagentJobResult): Promise<void> {
+    try {
+      await this.events.onPush!(job, result)
+      this.completeDelivery(job)
+    } catch (error) {
+      this.events.onPushError?.(job, error)
+    } finally {
+      this.completeSettlement(job)
+    }
+  }
+
+  private completeSettlement(job: InternalJob): void {
+    if (job.completed) return
+    job.completed = true
     job.resolveSettle()
   }
 

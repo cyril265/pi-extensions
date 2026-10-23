@@ -1,6 +1,9 @@
 #!/bin/bash
-# Refuses to delete anything outside the PI_RM_ALLOW directories, then runs /bin/rm.
+# Refuses to delete directories outside the PI_RM_ALLOW directories, then runs /bin/rm.
+# Files and symlinks are not checked.
 # With PI_RM_ASK_DIR set, blocked operands are sent to the pi extension, which asks the user.
+# Only agent bash commands carry PI_SESSION_ID. Everything else pi starts gets plain /bin/rm.
+[ -n "${PI_SESSION_ID-}" ] || exec /bin/rm "$@"
 fail_config() {
     printf 'pi-rm: guard configuration error: %s\n' "$1" >&2
     exit 64
@@ -22,8 +25,8 @@ for ENTRY in "${ALLOW_ENTRIES[@]}"; do
     [ "$CANONICAL_DIR" != / ] || fail_config 'an allowed directory must not be /'
     ALLOWED+=("$CANONICAL_DIR")
 done
-# A plain final component is checked by its parent, so `rm link` removes only the link.
-# A trailing slash is resolved through the link, because /bin/rm follows it there.
+# A plain final component is resolved through its parent, which also works for directories
+# the user cannot enter. A trailing slash is resolved through a link, because /bin/rm follows it.
 # `.` and `..` are resolved fully as well; /bin/rm rejects them, this only keeps the check strict.
 canonical_operand() {
     OPERAND=$1
@@ -108,7 +111,8 @@ for ARG do
             *) PARSING_OPTIONS=0 ;;
         esac
     fi
-    if [ ! -e "$ARG" ] && [ ! -L "$ARG" ]; then
+    # `rm link` removes only the link, so only `link/` counts as the directory behind it.
+    if [ ! -d "$ARG" ] || [ -L "$ARG" ]; then
         continue
     fi
     if canonical_operand "$ARG"; then

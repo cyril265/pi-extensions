@@ -229,6 +229,52 @@ make_profile() {
   [[ $(jq '[.packages,.extensions,.skills,.prompts,.themes] | all(length == 0)' "$profile/settings.json") == true ]] || fail
 }
 
+add_fixture_package() {
+  local base=$1
+  local package="$base/fixture-package"
+  mkdir -p "$package"
+  printf '{"name":"pi-rh-e2e-fixture","version":"1.0.0","private":true,"dependencies":{"is-number":"7.0.0"},"pi":{"extensions":[]}}\n' > "$package/package.json"
+  ln -s missing-target "$package/dangling-link"
+  jq --arg package "$package" '.packages = [$package]' "$base/profile/settings.json" > "$base/profile/settings.json.tmp"
+  mv "$base/profile/settings.json.tmp" "$base/profile/settings.json"
+  chmod 600 "$base/profile/settings.json"
+}
+
+wait_remote_test() {
+  local expression=$1 timeout=${2:-$UI_TIMEOUT}
+  local deadline=$((SECONDS + timeout))
+  while (( SECONDS < deadline )); do
+    ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "test $expression" && return
+    sleep 1
+  done
+  fail
+}
+
+wait_local_path() {
+  local path=$1 expected=$2 deadline=$((SECONDS + UI_TIMEOUT))
+  while (( SECONDS < deadline )); do
+    if [[ "$expected" == present && -e "$path" ]] || [[ "$expected" == absent && ! -e "$path" ]]; then return; fi
+    sleep 0.5
+  done
+  fail
+}
+
+wait_remote_terminal() {
+  local name=$1 pane=$2 task=$3
+  wait_local_path "$(dirname "$task")/attachment-active" present
+  wait_visible "$name" "$pane" '.pi-remote-handoff/workspaces/'
+}
+
+stop_through_companion() {
+  local name=$1 pane=$2 project=$3
+  send_text_enter "$name" "$pane" /remote-handoff
+  wait_visible "$name" "$pane" 'Stop and prepare result'
+  choose_down "$name" "$pane" 1
+  confirm_yes "$name" "$pane" 'Abort the active turn, stop Pi, and prepare the result?'
+  wait_remote_state "$project" prepared "$START_TIMEOUT"
+  wait_local_controller_ready "$name" "$pane" "$project"
+}
+
 make_repo() {
   local label=$1
   local base="$ROOT/$label"
@@ -372,6 +418,18 @@ assert_ui_message() {
   output=$(tr -d '[:space:]' <<<"$output")
   expected=$(tr -d '[:space:]' <<<"$expected")
   [[ "$output" == *"$expected"* ]] || fail
+}
+
+wait_ui_message() {
+  local name=$1 pane=$2 expected=$3 timeout=${4:-$UI_TIMEOUT}
+  local deadline=$((SECONDS + timeout)) output
+  expected=$(tr -d '[:space:]' <<<"$expected")
+  while (( SECONDS < deadline )); do
+    output=$(pane_recent "$name" "$pane" | tr -d '[:space:]' || true)
+    [[ "$output" == *"$expected"* ]] && return
+    sleep 0.4
+  done
+  fail
 }
 
 wait_for_conflict_question() {
@@ -617,10 +675,11 @@ remove_scenario_fixture() {
 
 scenario_direct_apply() {
   step 'direct apply: setup'
-  local base repo original controller name pane task remote_dir remote_herdr remote_session control
+  local base repo original controller name pane task remote_dir remote_herdr remote_session control fixture_dependency
   base=$(make_repo direct)
   repo="$base/repo"
   original="$base/original.jsonl"
+  add_fixture_package "$base"
   [[ ! -e "$original" ]] || fail
   controller=$(start_controller "$base" "$repo" "$original")
   name=${controller%%$'\t'*}; pane=${controller#*$'\t'}
@@ -631,17 +690,21 @@ scenario_direct_apply() {
   send_text_enter "$name" "$pane" /remote-handoff
   wait_visible "$name" "$pane" 'start: hand off this conversation'
   send_key "$name" "$pane" enter
-  wait_task_phase "$repo" active "$START_TIMEOUT"
+  wait_task_phase "$repo" remote "$START_TIMEOUT"
   record_task_resources "$repo"
   task=$(task_file "$repo")
   remote_dir=$(jq -r '.remoteDir' "$task")
   remote_herdr=$(jq -r '.remoteHerdrCommand' "$task")
   remote_session=$(jq -r '.herdrSession' "$task")
-  control=$(jq -r '.controlSessionFile' "$task")
+  control="$(dirname "$task")/control/session.jsonl"
+  [[ -f "$control" ]] || fail
   [[ $(jq -r '.originalSessionExisted' "$task") == false ]] || fail
   [[ ! -e "$original" ]] || fail
   [[ -f "$(dirname "$task")/attachment-active" ]] || fail
   wait_remote_state "$repo" idle "$REMOTE_IDLE_TIMEOUT"
+  fixture_dependency=$(printf %q "$remote_dir/profile/home/.pi/agent/local-packages/fixture-package/node_modules/is-number/package.json")
+  wait_remote_test "-f $fixture_dependency"
+  wait_remote_test "! -L $(printf %q "$remote_dir/profile/home/.pi/agent/local-packages/fixture-package/dangling-link")"
   pass
 
   step 'direct apply: remote Bash isolation'
@@ -654,15 +717,36 @@ scenario_direct_apply() {
   [[ $(grep -c 'BashExecution' "$control" 2>/dev/null || true) -eq $before_control ]] || fail
   pass
 
-  step 'direct apply: stop through remote companion'
+  step 'direct apply: detach through remote companion and attach again'
   send_text_enter "$name" "$pane" /remote-handoff
-  wait_visible "$name" "$pane" 'Stop and prepare result'
-  choose_down "$name" "$pane" 1
-  confirm_yes "$name" "$pane" 'Abort the active turn, stop Pi, and prepare the result?'
-  wait_remote_state "$repo" prepared "$START_TIMEOUT"
-  wait_task_phase "$repo" prepared "$UI_TIMEOUT"
+  wait_visible "$name" "$pane" 'Detach and return to local Pi'
+  send_key "$name" "$pane" enter
+  wait_local_path "$(dirname "$task")/attachment-active" absent
+  wait_task_phase "$repo" remote "$UI_TIMEOUT"
+  wait_remote_state "$repo" idle "$UI_TIMEOUT"
+  sleep 2
+  send_text_enter "$name" "$pane" /remote-handoff
+  wait_visible "$name" "$pane" 'attach: open the remote Pi terminal'
+  send_key "$name" "$pane" enter
+  wait_remote_terminal "$name" "$pane" "$task"
+  pass
+
+  step 'direct apply: stop through remote companion'
+  stop_through_companion "$name" "$pane" "$repo"
   [[ ! -e "$(dirname "$task")/attachment-active" ]] || fail
-  wait_local_controller_ready "$name" "$pane" "$repo"
+  pass
+
+  step 'direct apply: continue remotely repairs the profile'
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "rm -f $(printf %q "$remote_dir/profile/profile.json")" || fail
+  open_prepared_menu "$name" "$pane"
+  choose_down "$name" "$pane" 1
+  confirm_yes "$name" "$pane" 'This deletes the prepared result'
+  wait_task_phase "$repo" remote "$START_TIMEOUT"
+  wait_remote_test "-f $(printf %q "$remote_dir/profile/profile.json")"
+  wait_remote_test "-f $fixture_dependency"
+  wait_remote_state "$repo" idle "$REMOTE_IDLE_TIMEOUT"
+  wait_remote_terminal "$name" "$pane" "$task"
+  stop_through_companion "$name" "$pane" "$repo"
   pass
 
   step 'direct apply: view diff without applying'
@@ -721,7 +805,7 @@ scenario_directory_apply() {
   send_text_enter "$name" "$pane" /remote-handoff
   wait_visible "$name" "$pane" 'start: hand off this conversation'
   send_key "$name" "$pane" enter
-  wait_task_phase "$dir" active "$START_TIMEOUT"
+  wait_task_phase "$dir" remote "$START_TIMEOUT"
   record_task_resources "$dir"
   task=$(task_file "$dir")
   remote_dir=$(jq -r '.remoteDir' "$task")
@@ -731,7 +815,6 @@ scenario_directory_apply() {
   [[ $(jq -r '.repositoryKind' "$task") == directory ]] || fail
   [[ $(jq -r '.repoRoot' "$task") == "$(cd "$dir" && pwd -P)" ]] || fail
   [[ $(jq -r '.commonGitDir' "$task") == "$namespace" ]] || fail
-  [[ $(jq -r '.privateGitDir' "$task") == "$namespace/repository.git" ]] || fail
   [[ -d "$namespace/repository.git" ]] || fail
   [[ ! -e "$dir/.git" ]] || fail
   wait_remote_state "$dir" idle "$REMOTE_IDLE_TIMEOUT"
@@ -748,13 +831,7 @@ scenario_directory_apply() {
   pass
 
   step 'directory apply: stop through remote companion'
-  send_text_enter "$name" "$pane" /remote-handoff
-  wait_visible "$name" "$pane" 'Stop and prepare result'
-  choose_down "$name" "$pane" 1
-  confirm_yes "$name" "$pane" 'Abort the active turn, stop Pi, and prepare the result?'
-  wait_remote_state "$dir" prepared "$START_TIMEOUT"
-  wait_task_phase "$dir" prepared "$UI_TIMEOUT"
-  wait_local_controller_ready "$name" "$pane" "$dir"
+  stop_through_companion "$name" "$pane" "$dir"
   pass
 
   step 'directory apply: apply and clean up'
@@ -798,7 +875,7 @@ scenario_merge_review() {
   send_text_enter "$name" "$pane" /remote-handoff
   wait_visible "$name" "$pane" 'start: hand off this conversation'
   send_key "$name" "$pane" enter
-  wait_task_phase "$repo" active "$START_TIMEOUT"
+  wait_task_phase "$repo" remote "$START_TIMEOUT"
   record_task_resources "$repo"
   task=$(task_file "$repo")
   remote_dir=$(jq -r '.remoteDir' "$task")
@@ -818,13 +895,7 @@ scenario_merge_review() {
   pass
 
   step 'merge review: prepare result'
-  send_text_enter "$name" "$pane" /remote-handoff
-  wait_visible "$name" "$pane" 'Stop and prepare result'
-  choose_down "$name" "$pane" 1
-  confirm_yes "$name" "$pane" 'Abort the active turn, stop Pi, and prepare the result?'
-  wait_remote_state "$repo" prepared "$START_TIMEOUT"
-  wait_task_phase "$repo" prepared "$UI_TIMEOUT"
-  wait_local_controller_ready "$name" "$pane" "$repo"
+  stop_through_companion "$name" "$pane" "$repo"
   pass
 
   step 'merge review: real Pi resolves ambiguous conflict'
@@ -879,7 +950,7 @@ scenario_restart_discard() {
   send_text_enter "$name" "$pane" /remote-handoff
   wait_visible "$name" "$pane" 'start: hand off this conversation'
   send_key "$name" "$pane" enter
-  wait_task_phase "$repo" active "$START_TIMEOUT"
+  wait_task_phase "$repo" remote "$START_TIMEOUT"
   record_task_resources "$repo"
   task=$(task_file "$repo")
   remote_dir=$(jq -r '.remoteDir' "$task")
@@ -898,7 +969,6 @@ scenario_restart_discard() {
   wait_visible "$name" "$pane" 'Remote Pi is active'
   choose_down "$name" "$pane" 2
   wait_remote_state "$repo" prepared "$START_TIMEOUT"
-  wait_task_phase "$repo" prepared "$UI_TIMEOUT"
   wait_visible "$name" "$pane" 'view diff'
   choose_down "$name" "$pane" 3
   confirm_yes "$name" "$pane" 'Delete the prepared files and remote conversation without applying them?'
@@ -908,6 +978,19 @@ scenario_restart_discard() {
   [[ $(jq -r '.cwd' <<<"$(sed -n '1p' "$original")") == "$(cd "$repo" && pwd -P)" ]] || fail
   assert_clean_handoff "$repo" "$remote_dir" "$remote_herdr" "$remote_session"
   assert_no_driver_errors "$name" "$pane"
+  pass
+
+  step 'controller restart: leftover remote workspace'
+  local quoted_remote_dir
+  quoted_remote_dir=$(printf %q "$remote_dir")
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "mkdir -m 700 $quoted_remote_dir" || fail
+  send_text_enter "$name" "$pane" /remote-handoff
+  wait_visible "$name" "$pane" 'start: hand off this conversation'
+  send_key "$name" "$pane" enter
+  wait_ui_message "$name" "$pane" "Remote workspace $HOST:$remote_dir already exists, but this repository has no Remote Handoff task."
+  [[ ! -e "$task" ]] || fail
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "test -d $quoted_remote_dir && rmdir $quoted_remote_dir" || fail
+  assert_remote_absent "$remote_dir" "$remote_herdr" "$remote_session"
   stop_controller "$name" "$base"
   remove_scenario_fixture "$base"
   pass

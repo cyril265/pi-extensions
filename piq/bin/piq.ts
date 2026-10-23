@@ -15,23 +15,20 @@ type CommandResponse = {
 }
 
 type CommandConfig = {
-  name: 'pil' | 'pic' | 'pim'
-  model: string
+  name: 'piq' | 'pix'
   mode: PiqMode
 }
 
-const lowModel = 'openai-codex/gpt-5.5:low'
-const mediumModel = 'openai-codex/gpt-5.5:medium'
-const commandModel = 'openai-codex/gpt-5.6-sol:medium'
+const model = 'openai-codex/gpt-5.6-sol:medium'
 const finalResponsePrompt =
   'Final user-facing response for this shorthand CLI: plain text only, no Markdown formatting, no headings, no bullets, no code fences. Around 350 characters or less. Exception: if the user explicitly asks for code, code formatting is allowed and the response can be longer when needed. Answer directly.'
 const commandResponsePrompt =
-  'This is pic command mode. Do not answer normally. For the final user-facing result, call respond_command with the exact one-line shell command to place in the terminal input field and an optional concise explanation. The command must not contain a newline. The tool fills the prompt but does not press Enter.'
+  'This is pix command mode. Do not answer normally. For the final user-facing result, call respond_command with the exact one-line shell command to place in the terminal input field and an optional concise explanation. The command must not contain a newline. The tool fills the prompt but does not press Enter.'
 const thinkingAnimationFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 const command = commandFromExecutable(basename(process.argv[1] ?? ''))
 
 if (command === undefined) {
-  process.stderr.write('unknown executable name; expected pil, pic, or pim\n')
+  process.stderr.write('unknown executable name; expected piq or pix\n')
   process.exit(2)
 }
 
@@ -54,7 +51,6 @@ if (prompt.length === 0) {
   process.exit(2)
 }
 
-const model = command.model
 const piqMode = command.mode
 
 const piArgs = ['--mode', 'json', '--model', model, '--no-extensions', '--no-session']
@@ -483,16 +479,12 @@ function textFromPart(part: unknown): string {
 }
 
 function commandFromExecutable(executableName: string): CommandConfig | undefined {
-  if (executableName === 'pil' || executableName === 'piq.ts') {
-    return { name: 'pil', model: lowModel, mode: 'normal' }
+  if (executableName === 'piq' || executableName === 'piq.ts') {
+    return { name: 'piq', mode: 'normal' }
   }
 
-  if (executableName === 'pic') {
-    return { name: 'pic', model: commandModel, mode: 'command' }
-  }
-
-  if (executableName === 'pim') {
-    return { name: 'pim', model: mediumModel, mode: 'normal' }
+  if (executableName === 'pix' || executableName === 'pix.ts') {
+    return { name: 'pix', mode: 'command' }
   }
 
   return undefined

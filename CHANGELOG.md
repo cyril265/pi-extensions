@@ -2,11 +2,183 @@
 
 All notable changes to this repository are documented here.
 
+## 2026-10-23
+
+### piq
+
+- `pil`, `pim`, and `pic` are replaced by `piq` ("pi question", prints an answer and keeps Pi's built-in tools) and `pix` ("pi execute", fills the shell input with a command without pressing Enter). Both use `openai-codex/gpt-5.6-sol:medium`. Run `npm link` again to install the new commands.
+
+### pi-audit
+
+- Audit and follow-up Pi sessions are saved as `.jsonl` files in `<agent-dir>/audit-runs/sessions/` instead of running with `--no-session`.
+
+### provider-system-prompt-append
+
+- Appends go into Pi's structured `provider_system_prompt_append` system prompt section, rendered as `<provider_system_prompt_append>` after the built-in sections, instead of being concatenated to the end of the system prompt. When no append applies to the current model, the section is removed.
+- New `npm test` integration test.
+
+## 2026-10-22
+
+### General
+
+- Every extension now develops and tests against Pi 1.4.0 and typebox 1.3.27. `prewalk`, `remote-handoff`, `rm-guard`, `session-search` and `simple-subagent` pin 1.4.0; the packages with `*` ranges have lockfiles resolving 1.4.0. No code changes were needed.
+
+### self-compaction
+
+- The summary request no longer caps output at 80% of `reserveTokens`. With high thinking levels, reasoning used up that cap and the summary failed. It now uses the model's output limit, reduced to what fits the context window, like Pi 1.4.0's own compaction. 80% of `reserveTokens` is now only the minimum free room needed to try self-compaction.
+- A summary that stops at the output limit is treated as a failure and falls back to Pi's default compaction. Before, a cut-off summary was saved.
+- The summary request now runs the session's `before_provider_request` and `before_provider_headers` handlers, also right after a restart. With an Anthropic subscription login, the request skipped `pi-claude-code-use`, failed with "Third-party apps now draw from extra usage", and fell back to default compaction. Payload rewrites such as `anthropic-thinking-binding` now apply to it too, so they no longer cost cache reads.
+- The summary request includes the session's last reply again. A reply stamped in the same millisecond as the request that produced it was dropped.
+
+## 2026-10-21
+
+### self-compaction
+
+- New extension. `/compact` and auto-compaction send the session's own request (same system prompt, tools, projected messages, model, session id, and thinking settings) plus a checkpoint request, so the summary reuses the provider prompt cache and sees full tool results. Falls back to Pi's default compaction for overflow recovery, requests that would not fit, and failures.
+
+## 2026-10-20
+
+### anthropic-thinking-binding
+
+- Also removes `thinking.block_binding` for `cpa-claude/claude-fable-5-1`, the CLIProxyAPI provider.
+
+### cpa-claude
+
+- Added an extension that registers the `cpa-claude` provider with Pi's bundled Anthropic models, pointed at a local CLIProxyAPI. The API key stays in `models.json`.
+
+## 2026-10-16
+
+### General
+
+- Every extension now develops and tests against Pi 1.3.0 and typebox 1.3.27. `simple-subagent`, `prewalk`, `rm-guard`, `remote-handoff`, and `session-search` pin Pi 1.3.0; extensions that declare Pi as `*` have lockfiles resolving 1.3.0.
+
+## 2026-10-15
+
+### rm-guard
+
+- `rm` only checks directories. Files and symlinks outside the project, the user temp dir, and `/tmp` are deleted without a confirm dialog, so `rm ../outside/file` and `rm ~/.cache/foo.log` just run. A directory outside, such as `rm -rf ../outside/dir`, `rm -rf "$HOME"`, or `rm -rf "$UNSET"/*`, still asks or exits 3, and a blocked directory still keeps every file in the same `rm` call.
+
+### worktree
+
+- `clean-generated-artifacts` no longer deletes `node_modules` and no longer walks into it. `wt` shares `node_modules` blocks across worktrees with APFS copy-on-write, so deleting one frees little and forces a fresh `npm install`.
+
+## 2026-10-13
+
+### General
+
+- Every extension now develops and tests against Pi 1.2.0 and typebox 1.3.27. `simple-subagent`, `prewalk`, `rm-guard`, `remote-handoff`, and `session-search` pin Pi 1.2.0; extensions that declare Pi as `*` have lockfiles resolving 1.2.0.
+- Pi 1.2.0 also fires `before_agent_start` for runs started by `pi.sendMessage(..., { triggerTurn: true })`, and those events have no `prompt`. `pi-last-turn-review`, `herdr-tab-name`, and `warp-notifications` handle only user prompts there, as before; `warp-notifications` no longer throws on such runs. The simple-subagent T3 test calls `emitBeforeAgentStart` with the new `{ messageType, prompt }` trigger.
+
+### herdr-settle
+
+- Fixed `GitLab lookup failed: ... Oauth2: "invalid_grant"` warnings when many pi processes checked at once. Parallel `glab` calls tried to renew the expired GitLab login with the same single-use refresh token and failed. `glab` calls from all pi processes now run one at a time under a lock, and a call that fails with `invalid_grant` is retried once after 2 seconds.
+- Checks after the first run every 30 to 35 minutes instead of exactly 30, so pi processes started together stop checking in lockstep.
+
+### rm-guard
+
+- Bash commands are no longer rewritten. The `export PI_RM_ALLOW=... PATH=... PI_RM_ASK_DIR=...` line rm-guard prepended showed up in `pi-background-terminals` titles, the `/ps` view, and completion notices to the model, and it broke that extension's duplicate-command and `cd`-only checks. rm-guard now sets `PATH`, `PI_RM_ALLOW`, and `PI_RM_ASK_DIR` in pi's own environment on session start and removes them on shutdown.
+- `bin/rm` only guards processes that carry `PI_SESSION_ID`, which pi and `pi-background-terminals` set for the model's bash commands only. `!` commands and other extensions' subprocesses get plain `/bin/rm`.
+- The confirm dialog works for commands that went to the background. The ask dir used to be deleted when the tool call returned, so a backgrounded `rm` outside the project failed with a configuration error instead of asking. It now lives for the whole session.
+- Windows drive paths in the allow list are passed to Git Bash as `/c/...` instead of failing on the `:`.
+- New `npm run test:e2e`: drives pi over RPC with a live model, with the built-in `bash` tool and with `pi-background-terminals` (new dev dependency, 0.5.4).
+
+## 2026-10-08
+
+### General
+
+- Every extension now develops and tests against Pi 1.1.0 and typebox 1.3.27. `simple-subagent`, `prewalk`, `rm-guard`, and `remote-handoff` pin Pi 1.1.0 instead of 0.84.2 or 0.80.9. Extensions that declare Pi as `*` had lockfiles resolving 0.74.0 through 0.85.1; their lockfiles now resolve 1.1.0.
+
+### prewalk
+
+- The integration test runs `dispatch_executor` with the tool context Pi 1.1.0 requires, created by Pi's extension runner.
+
+### session-search
+
+- The integration test imports Pi from its own `@earendil-works/pi-coding-agent` dev dependency instead of the global npm folder, where the managed Pi install no longer puts it.
+
+### simple-subagent
+
+- T3-hosted Pi sessions now use T3's `delegate_task` instead of registering simple-subagent tools, commands, or its Node client. Prompt-only routing still let fresh threads choose `runSubAgents`, which creates no clickable T3 child thread. T3-specific guidance includes local model aliases and resolves them through T3's model catalog. Ordinary Pi and managed-child behavior are unchanged.
+- Fixed the Node client rejecting an unknown agent field with `agents/0/<field>: schema is false` on Pi 1.1.0. It reports `agents/0: must not have additional properties` again.
+- The client integration test runs tools with the tool context Pi 1.1.0 requires, created by Pi's extension runner.
+
+## 2026-10-02
+
+### footer
+
+- The footer no longer shows the provider name. The model name follows the context meter.
+- The `@arhen/pi-core-tps-stats` status shows muted as `60 tps • 1,9s ttft` instead of `eff 60 t/s | 1,9s ttft`. Other text from that status, such as the reset notice on model change, shows unchanged.
+- The `@calesennett/pi-codex-fast` `Fast`/`Ultrafast` status shows only while the model's provider is `openai-codex` or `openai-codex-<n>`.
+
+## 2026-10-01
+
+### footer
+
+- The model name can get its own color per model. `~/.pi/agent/pi-hud-footer.json` maps model ids to hex colors under `modelColors`. Ids can use `*` wildcards, such as `claude-opus-*`, and an exact id wins over a wildcard. Invalid entries are skipped with a warning, and `/reload` applies edits.
+
+## 2026-09-29
+
+### herdr-settle
+
+- Every check, **Settle tab** action, and shelf reopen writes one line to `<agent dir>/herdr-settle/log.jsonl`. Each line has the time, pid, outcome, merge request result, blockers, errors, and the `herdr`, `git`, and `glab` calls that finished before it was written, with timing, exit code, and output on failure. A settled tab's line is written before the tab closes. An operation cut short by the process exiting, such as Ctrl+C during a reopen, is logged as `interrupted`.
+- The log rotates to `log.old.jsonl` at 10 MB under a lock, so many pi processes rotating at once keep the old file and every new line.
+- Log strings are cut to 2000 characters, and credentials in URLs are replaced with `***`.
+- Warnings now include the log path.
+
 ## 2026-09-27
+
+### herdr-settle
+
+- New extension and Herdr plugin modeled on T3 Code's thread settling. Every 30 minutes each pi in a Herdr pane checks its tab and closes it when the branch's GitLab merge request merged or closed after the last user message, or when the session has been idle for 7 days.
+- Focused tabs, busy or non-pi agents, unsent editor text, running commands in other panes, and working subagents keep a tab open.
+- Settled tabs go to a shelf popup (`local.herdr-settle.open`) that reopens the tab and resumes its pi sessions. A **Settle tab** tab-menu action settles by hand.
+- simple-subagent panes idle for 14 hours are closed in every workspace; working, blocked, and focused ones stay.
+- Reopening a tab whose workspace closed with it recreates the workspace in the tab's folder under its old name.
+
+### remote-handoff
+
+- `start` and `continue remotely` upload everything in one compressed SSH stream and prepare the workspace in the same connection. Before, `start` opened about 19 SSH and SCP connections before attaching.
+- The portable Pi profile is no longer staged and tarred locally. Remote Handoff hashes the profile files, and the remote host stores contents by SHA-256 in `~/.pi-remote-handoff/profile-objects`. Only changed files are uploaded. On a 2 GB profile, the local build dropped from 40s to 2-3s and a repeat upload from 422 MB to 9.5 MB.
+- The dependency cache key covers only install inputs: `package.json` without `scripts`, lockfiles, `.npmrc`, and the remote runtime. Editing an extension no longer reinstalls the dependencies of every portable package. Packages with local-path dependencies or workspaces keep the full-content key.
+- Cached `node_modules` trees are hard-linked into the workspace, with a copy fallback, and packages are restored in parallel.
+- The shared Pi runtime installs in parallel with profile preparation.
+- On macOS and Linux, SSH calls share one connection per host through OpenSSH `ControlMaster`. Later calls take about 40 ms instead of about 330 ms. Status polling benefits too.
+- The remote check and the workspace-availability check share one SSH call. Launch returns its observation directly.
+- Local session export, file snapshot, bundle, profile hashing, and credential snapshot run concurrently.
+- The Pi version comes from `VERSION` instead of spawning `pi --version`.
+- The result bundle excludes history the local repository already has.
+- Portable profile paths in `settings.json` and `profile.json` are always POSIX paths, which fixes profiles built on Windows.
+- Local `tar` is no longer required.
+- The portable profile skips gitignored files inside Git work trees. It uses the ignore rules of the repository each directory actually lives in, following symlinks. Configured roots and tracked files are always copied. On the real profile this cut 33,517 files / 1.9 GB to 1,639 files / 39 MB. Gitignored build output of local packages, such as `dist/`, no longer transfers.
 
 ### herdr-tab-name
 
 - Fixed Pi exiting with `This extension ctx is stale after session replacement or reload` when a new session, fork, resume, or reload happened while automatic naming was still running. The replaced session now drops its pending naming work without touching the herdr tab.
+
+### tool-result-trim
+
+- Dropped the `pi-bash-trim` dependency and its `o200k_base` BPE tokenizer. The trimming and line-collapsing logic now lives in this package, and token counts are estimated as characters divided by 4, like Pi's own context estimate.
+- Idle memory added by the extension fell from about 122 MB to 3 MB under Node and from about 87 MB to 4 MB under Bun. Trimming a large result takes 2–3× less time.
+- `bash` output now uses the same `~/.pi/agent/extensions/pi-tool-result-trim.json` options as other tools. The separate `pi-bash-trim.json` config is no longer read.
+- Installed dependencies shrank from 423 MB to 172 MB because the old `@mariozechner/pi-coding-agent` tree is gone.
+- Fixed collapsing of similar lines hiding lines that only add trailing text. Two `operation completed successfully` lines followed by two `operation completed successfully ERROR disk full` lines were collapsed into one summary that dropped `ERROR disk full`.
+- Fixed `bash` results pointing at Pi's saved full-output file when that file could not be read. The extension now saves its own copy and points there.
+- Replaced the test that used a fake Pi object with an integration test that runs the real `pi` CLI, a real model, and the real `bash` and `find` tools, under Node and under Bun when `bun` is on `PATH`.
+
+## 2026-09-26
+
+### remote-handoff
+
+- Attach now runs Herdr's own `terminal attach` client over `ssh -t`. Detach from remote `/remote-handoff` stops that client with `pkill`. Herdr's `ctrl+b q` also detaches.
+- `view diff` and the final apply review show `git diff` in `less`.
+- Local Herdr is no longer required. The remote host uses any Herdr 0.8.2 or newer and installs the latest stable release with Herdr's installer when none exists.
+- Each Pi version gets its own shared runtime directory. Installing a new version no longer deletes a runtime that another workspace may be using.
+- "continue remotely" runs the same profile check and repair as `start`, now inside the remote preparation script.
+- Merge review is launched with Node's executable, so it works on Windows.
+- Remote paths in task metadata stay POSIX paths on Windows.
+- Task metadata version 8 no longer stores values that can be derived. Handoffs started with an earlier version cannot be loaded.
+- `start` now names the remote workspace when it already exists without a local task, instead of failing with `ssh failed (1)`.
+- The task file keeps one `remote` phase instead of `active`, `stopped`, and `prepared`. The menu takes the run state from the remote host. An incomplete remote workspace offers `status` and `discard`.
 
 ## 2026-09-25
 
@@ -24,6 +196,23 @@ All notable changes to this repository are documented here.
 ### pi-openai-compaction
 
 - Fixed `/compact` failing with `Cannot read properties of undefined (reading 'split')` on pi 0.87, which stores the system prompt as `system` messages in the session. The serializer now skips these messages. The system prompt still goes to the compact request as `instructions`.
+
+## 2026-09-21
+
+### editors
+
+- Added `/rider` and `/zed` to open Pi's current working directory in Rider or Zed on macOS and Windows.
+
+## 2026-09-19
+
+### session-search
+
+- Searches now cover sessions from every working directory instead of only the current project's session directory.
+
+### simple-subagent
+
+- Automatic results now return through the owning T3 thread when T3 hosts Pi. This prevents T3 from terminating Pi when an asynchronous result starts a turn after the original turn has ended.
+- Job settlement now waits for asynchronous result delivery. A failed delivery keeps the result undelivered and reports the error through Pi's UI.
 
 ## 2026-09-15
 

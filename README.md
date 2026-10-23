@@ -25,9 +25,10 @@ Global settings live in `~/.pi/agent/settings.json`, project settings in `.pi/se
 | [`simple-subagent`](simple-subagent) | `runSubAgents({ agents: [...] })` and a Node client — run isolated subagents asynchronously; results arrive as a pushed report. Optional context-forking tool. |
 | [`prewalk`](prewalk) | Transparent [Prewalk](https://stencil.so/blog/prewalk)-style handoff on top of `simple-subagent`: frontier model explores, cheaper model executes. |
 | [`cwd`](cwd) | `/cwd` — continue the current session in another working directory without losing history. |
+| [`editors`](editors) | `/rider` and `/zed` — open the current working directory in Rider or Zed. |
 | [`footer`](footer) | Footer HUD: directory name, git branch, context meter, provider, model, thinking level, quota, session cost. |
 | [`tool-result-trim`](tool-result-trim) | Smart-trims text tool results before they enter context. |
-| [`rm-guard`](rm-guard) | Puts a path-checking `rm` first in `PATH` for every bash command; after variable and glob expansion, `rm` outside the project asks you first. |
+| [`rm-guard`](rm-guard) | Puts a path-checking `rm` first in `PATH` for the model's bash commands without changing their text; after variable and glob expansion, `rm` outside the project asks you first. |
 | [`pi-audit`](pi-audit) | Audits pi packages before install/update, then installs approved local snapshots. |
 | [`copy-plain`](copy-plain) | `/copy-plain` — copies the last assistant message as plain text (Slack-safe). |
 | [`session-search`](session-search) | `sessions-search` tool — searches across previous pi sessions. |
@@ -36,10 +37,12 @@ Global settings live in `~/.pi/agent/settings.json`, project settings in `.pi/se
 | [`prompt-template-shell`](prompt-template-shell) | Claude Code-style `` !`command` `` dynamic context in prompt templates. |
 | [`warp-notifications`](warp-notifications) | Emits Warp's OSC 777 CLI-agent protocol so completions and prompts hit Warp's agent inbox. |
 | [`herdr-tab-name`](herdr-tab-name) | Names the session and its herdr tab from the task, with manual renames winning. |
-| [`piq`](piq) | One-shot `pi` wrappers — `pil`, `pim`, `pic` — for quick prompts at fixed reasoning levels. |
+| [`herdr-settle`](herdr-settle) | Closes pi tabs idle for 7 days or whose GitLab MR merged or closed, and reopens them from a Herdr shelf. |
+| [`piq`](piq) | `piq` answers questions; `pix` fills shell input without executing it. Both use Sol medium. |
 | [`remote-handoff`](remote-handoff) | Hands a conversation and its project files to pi on an SSH host, then brings the conversation and changes back. |
 | [`pi-enclave`](pi-enclave) | Runs all tools inside a Gondolin VM. Fork of yapp, see Attribution. |
 | [`pi-openai-compaction`](pi-openai-compaction) | Replays OpenAI Responses compaction V2 checkpoints. Fork, see Attribution. |
+| [`self-compaction`](self-compaction) | Compacts by asking the session itself, with its cached prompt, tools, and full messages, to write the summary. |
 | [`pi-last-turn-review`](pi-last-turn-review) | `/diff-turn`, `/diff-git`, `/annotate-turn`, `/undo-turn` — review the last turn's diff in a native window with inline comments. Fork, see Attribution. |
 
 ## Single-file extensions
@@ -54,18 +57,32 @@ Point `packages` at the individual file to load these.
 | [`shift-escape.ts`](shift-escape.ts) | Makes Shift+Escape act like Escape in the editor. |
 | [`cache-retention-long.ts`](cache-retention-long.ts) | Sets `PI_CACHE_RETENTION=long`. |
 | [`anthropic-thinking-binding.ts`](anthropic-thinking-binding.ts) | Removes Fable 5.1 thinking block binding for eligible older Anthropic accounts. |
+| [`cpa-claude.ts`](cpa-claude.ts) | Registers the `cpa-claude` provider: every built-in Anthropic model, routed through a local CLIProxyAPI at `http://127.0.0.1:8317`. |
 
 ### anthropic-thinking-binding
 
-This extension only changes requests for `anthropic/claude-fable-5-1`. It removes
-`thinking.block_binding` from the outgoing provider payload and leaves the rest of the thinking
-configuration, messages, prompts, thinking blocks, and signatures unchanged.
+This extension only changes requests for `claude-fable-5-1` on the `anthropic` and `cpa-claude`
+providers. It removes `thinking.block_binding` from the outgoing provider payload and leaves the
+rest of the thinking configuration, messages, prompts, thinking blocks, and signatures unchanged.
 
 **Warning:** Use this extension only with Anthropic accounts created before
 2026-08-31 00:00 UTC. Accounts created on or after that time enforce thinking block binding by
 default. On an account where binding is enforced, removing Pi's `drop_block` behavior can turn a
 thinking-prefix mismatch into an HTTP 400 error. Later Claude models will enforce binding for all
 accounts.
+
+### cpa-claude
+
+Copies Pi's bundled Anthropic catalog into a `cpa-claude` provider, so cost, prompt cache
+lifetimes, input limits, and compat flags follow Pi updates without a hand-kept `models.json`
+list. Model names get a ` (CPA)` suffix. The extension holds no API key; set it in
+`~/.pi/agent/models.json`:
+
+```json
+{ "providers": { "cpa-claude": { "apiKey": "<CLIProxyAPI key>" } } }
+```
+
+The list covers the whole catalog, so it can include models the proxy does not serve.
 
 ## Utilities
 

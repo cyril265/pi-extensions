@@ -52,4 +52,4 @@ wt help
 ./clean-generated-artifacts ../repo_branch-name
 ```
 
-It walks the tree and collects `node_modules`, .NET `bin` and `obj` directories, and git-ignored untracked `.angular` and `dist` directories. A `bin` counts as .NET output only when its parent holds a `.csproj`, `.fsproj`, or `.vbproj` file, or an `obj` sibling. The script prints every directory it found, then deletes them only after you type `delete`.
+It walks the tree and collects .NET `bin` and `obj` directories and git-ignored untracked `.angular` and `dist` directories. It keeps `node_modules` and does not look inside it, because `wt` shares those blocks across worktrees with APFS copy-on-write. A `bin` counts as .NET output only when its parent holds a `.csproj`, `.fsproj`, or `.vbproj` file, or an `obj` sibling. The script prints every directory it found, then deletes them only after you type `delete`.

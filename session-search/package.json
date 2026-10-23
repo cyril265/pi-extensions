@@ -5,6 +5,9 @@
     "node": ">=26.0.0 <27"
   },
   "type": "module",
+  "scripts": {
+    "test": "node --test index.integration.test.mjs"
+  },
   "dependencies": {
     "@ff-labs/fff-node": "^0.8.1",
     "typebox": "*"
@@ -16,5 +19,8 @@
     "extensions": [
       "./index.ts"
     ]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.4.0"
   }
 }

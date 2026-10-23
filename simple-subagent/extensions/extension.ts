@@ -3,6 +3,7 @@ import { registerClientBridge } from './client-bridge.ts'
 import { readSimpleSubagentConfig } from './config.ts'
 import { registerHerdrChildBridge } from './herdr-child.ts'
 import { isHerdrTerminal, openHerdrForkTab } from './herdr-tab.ts'
+import { registerT3Delegation, sendT3ThreadMessage } from './t3.ts'
 import { registerSubagentTools } from './tools.ts'
 import type { ThinkingLevel } from './types.ts'
 
@@ -13,6 +14,7 @@ export default function (pi: ExtensionAPI) {
   const isSubagentProcess = process.env[SIMPLE_SUBAGENT_PROCESS_ENV] === '1'
   const inheritedPromptCacheKey = process.env[SIMPLE_SUBAGENT_CACHE_KEY_ENV]
   const config = readSimpleSubagentConfig()
+  if (!isSubagentProcess && registerT3Delegation(pi, config)) return
 
   registerHerdrChildBridge(pi)
 
@@ -57,7 +59,9 @@ export default function (pi: ExtensionAPI) {
   })
 
   const clientBridge = registerClientBridge(pi)
-  const subagentTools = registerSubagentTools(pi, isSubagentProcess, config)
+  const subagentTools = registerSubagentTools(pi, isSubagentProcess, config, {
+    pushResult: sendT3ThreadMessage,
+  })
   clientBridge.attach(subagentTools)
   clientBridge.registerClosureWait()
 }

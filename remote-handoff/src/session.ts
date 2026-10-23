@@ -217,17 +217,13 @@ export async function createControlSession(controlSessionFile: string, localCwd:
 
 export async function prepareReturnedSession(
   remoteSessionPath: string,
-  originalSessionFile: string,
+  destination: string,
   originalCwd: string,
   expectedSessionId: string,
 ): Promise<PreparedSessionFile> {
-  if (!isAbsolute(remoteSessionPath)) throw new Error("The returned Pi conversation path is not absolute.");
-  if (!isAbsolute(originalSessionFile)) throw new Error("The original Pi conversation path is not absolute.");
-  if (!isAbsolute(originalCwd)) throw new Error("The original Pi conversation cwd is not absolute.");
   const lines = parseJsonl(await readFile(remoteSessionPath, "utf8"), "Returned Pi session");
   const header = validateReturnedHeader(lines, "Returned Pi session", expectedSessionId);
-  const temporary = join(dirname(originalSessionFile), `.${randomUUID()}.pi-remote-handoff.tmp`);
-  return writeTemporarySession(temporary, [{ ...header, cwd: originalCwd }, ...lines.slice(1)]);
+  return writeTemporarySession(destination, [{ ...header, cwd: originalCwd }, ...lines.slice(1)]);
 }
 
 export async function createReviewSession(

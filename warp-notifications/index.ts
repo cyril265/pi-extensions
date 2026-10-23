@@ -210,6 +210,7 @@ export default function (pi: ExtensionAPI) {
   })
 
   pi.on('before_agent_start', async event => {
+    if (event.messageType !== 'user') return
     pendingPrompt = event.prompt.trim() || 'Pi task'
   })
 

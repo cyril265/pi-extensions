@@ -16,9 +16,9 @@ function inContainer(script: string) {
 }
 
 const setup =
-  'ln -s /usr/local/bin/bash /bin/bash; mkdir -p /work; touch /work/keep "$HOME/precious"; cd /work;'
+  'ln -s /usr/local/bin/bash /bin/bash; mkdir -p /work "$HOME/projects"; touch /work/keep "$HOME/projects/precious"; cd /work;'
 const probe =
-  'for p in /etc/passwd /usr/local/bin/bash /work/keep "$HOME/precious"; do [ -e "$p" ] && echo "$p present" || echo "$p gone"; done'
+  'for p in /etc/passwd /usr/local/bin/bash /work/keep "$HOME/projects/precious"; do [ -e "$p" ] && echo "$p present" || echo "$p gone"; done'
 
 it('control: without the guard, rm -rf "$UNSET"/* destroys the container filesystem', () => {
   const result = inContainer(`${setup} rm -rf "$UNSET"/* 2>/dev/null; echo "exit=$?"; ${probe}`)
@@ -28,7 +28,7 @@ it('control: without the guard, rm -rf "$UNSET"/* destroys the container filesys
 
 it('with the guard, rm -rf "$UNSET"/* is refused on real bash 3.2 before /bin/rm runs', () => {
   const result = inContainer(
-    `${setup} export PI_RM_ALLOW=/work:/tmp PATH=/guard:$PATH; rm -rf "$UNSET"/*; echo "exit=$?"; ${probe}`,
+    `${setup} export PI_SESSION_ID=test PI_RM_ALLOW=/work:/tmp PATH=/guard:$PATH; rm -rf "$UNSET"/*; echo "exit=$?"; ${probe}`,
   )
   assert.match(result.stderr, /pi-rm: blocked deletion outside the allowed directories/)
   assert.match(result.stdout, /exit=3/)
@@ -39,10 +39,10 @@ it('with the guard, rm -rf "$UNSET"/* is refused on real bash 3.2 before /bin/rm
 
 it('with the guard, rm -rf "$HOME" and cd $UNSET && rm -rf * are refused on real bash 3.2', () => {
   const result = inContainer(
-    `${setup} export PI_RM_ALLOW=/work:/tmp PATH=/guard:$PATH; rm -rf "$HOME"; echo "exit=$?"; cd $UNSET && rm -rf *; echo "exit=$?"; ${probe}`,
+    `${setup} export PI_SESSION_ID=test PI_RM_ALLOW=/work:/tmp PATH=/guard:$PATH; rm -rf "$HOME"; echo "exit=$?"; cd $UNSET && rm -rf *; echo "exit=$?"; ${probe}`,
   )
   assert.match(result.stdout, /exit=3\nexit=3/)
   assert.match(result.stdout, /\/etc\/passwd present/)
   assert.match(result.stdout, /\/work\/keep present/)
-  assert.match(result.stdout, /\/root\/precious present/)
+  assert.match(result.stdout, /\/root\/projects\/precious present/)
 })

@@ -1,0 +1,25 @@
+id = "local.herdr-settle"
+name = "Settle"
+version = "0.1.0"
+min_herdr_version = "0.8.2"
+description = "Close finished pi tabs and reopen them from a shelf."
+platforms = ["linux", "macos", "windows"]
+
+[[actions]]
+id = "open"
+title = "Open settled tabs"
+command = ["node", "herdr/open-shelf.ts"]
+
+[[actions]]
+id = "settle"
+title = "Settle tab"
+contexts = ["tab"]
+command = ["node", "herdr/settle-tab.ts"]
+
+[[panes]]
+id = "shelf"
+title = "Settled tabs"
+placement = "popup"
+width = "80%"
+height = "70%"
+command = ["node", "herdr/shelf-view.ts"]

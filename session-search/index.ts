@@ -1,6 +1,6 @@
 import { createReadStream, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent'
 import { FileFinder, type GrepCursor, type GrepMatch } from '@ff-labs/fff-node'
@@ -107,11 +107,13 @@ function configuredSessionDir(ctx: ExtensionCommandContext): string {
 }
 
 function resolveSessionsDir(ctx: ExtensionCommandContext): string {
-  if (ctx.sessionManager.isPersisted()) {
-    return resolvePath(ctx.sessionManager.getSessionDir(), ctx.cwd)
+  const configuredDir = configuredSessionDir(ctx)
+  if (!ctx.sessionManager.isPersisted()) {
+    return configuredDir
   }
 
-  return configuredSessionDir(ctx)
+  const managedDir = resolvePath(ctx.sessionManager.getSessionDir(), ctx.cwd)
+  return isSamePath(dirname(managedDir), configuredDir) ? configuredDir : managedDir
 }
 
 function resolveCurrentSessionFile(ctx: ExtensionCommandContext): string | undefined {

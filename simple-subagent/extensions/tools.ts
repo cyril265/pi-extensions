@@ -60,6 +60,10 @@ export const isolatedAgentsSchema = Type.Array(
 )
 export type IsolatedDispatchRequest = Static<typeof isolatedAgentsSchema>[number]
 
+export type SubagentToolOptions = {
+  pushResult?: (message: string) => Promise<boolean>
+}
+
 export type RegisteredSubagentTools = {
   dispatchIsolated: (
     requests: IsolatedDispatchRequest[],
@@ -76,6 +80,10 @@ function getMessageText(content: string | Array<{ type: string; text?: string }>
     .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
     .map(part => part.text)
     .join('\n')
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function createScheduledDetails(
@@ -155,6 +163,7 @@ export function registerSubagentTools(
   pi: ExtensionAPI,
   isSubagentProcess: boolean,
   config: SimpleSubagentConfig,
+  options: SubagentToolOptions = {},
 ): RegisteredSubagentTools {
   const pendingForkJobs: PendingForkJob[] = []
   const activeSessionPaths = new Set<string>()
@@ -218,10 +227,15 @@ export function registerSubagentTools(
       widgetJobs.delete(job.id)
       widgetRenders.delete(job.id)
     },
-    onPush(job, result) {
-      pi.sendUserMessage(
-        `Subagent job ${job.id} finished.\nContinue your current work and use these findings where relevant.\n\n${result.text}`,
-        { deliverAs: 'steer' },
+    async onPush(job, result) {
+      const message = `Subagent job ${job.id} finished.\nContinue your current work and use these findings where relevant.\n\n${result.text}`
+      if (await options.pushResult?.(message)) return
+      pi.sendUserMessage(message, { deliverAs: 'steer' })
+    },
+    onPushError(job, error) {
+      jobContexts.get(job.id)?.ui.notify(
+        `Subagent job ${job.id} finished, but result delivery failed: ${errorMessage(error)}`,
+        'error',
       )
     },
     onDelivered(job) {

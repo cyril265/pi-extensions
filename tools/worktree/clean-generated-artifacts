@@ -9,7 +9,8 @@ from pathlib import Path
 
 
 GIT_IGNORED_TARGET_NAMES = {".angular", "dist"}
-TARGET_NAMES = {"node_modules", "bin", "obj"} | GIT_IGNORED_TARGET_NAMES
+TARGET_NAMES = {"bin", "obj"} | GIT_IGNORED_TARGET_NAMES
+SKIPPED_DIRECTORY_NAMES = {".git", "node_modules"}
 PROJECT_FILE_SUFFIXES = (".csproj", ".fsproj", ".vbproj")
 
 if len(sys.argv) != 2:
@@ -79,11 +80,11 @@ def find_targets() -> list[Path]:
             matched.add(name)
             targets.append(parent / name)
 
-        # Do not inspect Git metadata or directories that will be removed.
+        # Do not inspect Git metadata, dependencies, or directories that will be removed.
         directories[:] = [
             name
             for name in directories
-            if name != ".git" and name not in matched
+            if name not in SKIPPED_DIRECTORY_NAMES and name not in matched
         ]
 
     return targets

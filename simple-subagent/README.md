@@ -21,6 +21,21 @@ When Pi runs inside Herdr, tool subagents run in real Herdr panes instead of hid
 processes. They are hidden from Herdr's built-in Agents view and appear in the grouped
 Subagents view instead.
 
+## T3 Code
+
+When T3 hosts Pi, detected by `T3_MCP_URL` and `T3_MCP_BEARER_TOKEN`, this extension registers
+delegation guidance instead of its own tools, commands, or Node client. Subagents use T3's
+`mcp__t3-code__delegate_task`, which creates child threads the user can open. The guidance includes
+the configured model aliases, such as `sol`, and tells the model to resolve them through
+`mcp__t3-code__orchestrator_capabilities` before delegating. If the requested model is missing from
+T3's catalog, it reports that rather than starting a separate Pi process.
+
+Removing the competing tools matters: T3's `delegate_task` description recommends native tools
+when they support the requested model, so a provider prompt alone does not reliably select T3
+delegation. Ordinary Pi sessions keep all simple-subagent functionality. Managed simple-subagent
+children still load the extension with delegation locked during their assigned run, even when
+they inherit T3 environment variables.
+
 ## Install
 
 ```bash
@@ -35,7 +50,7 @@ Then reload:
 
 ## Node client
 
-For each live Pi session the extension sets `PI_SIMPLE_SUBAGENT_CLIENT` to a `file://` URL of
+Outside T3, for each live Pi session the extension sets `PI_SIMPLE_SUBAGENT_CLIENT` to a `file://` URL of
 `client.mjs`. A Node script run through Pi's bash tool imports it to start agents whose prompts
 are built in code, for example from a skill's template files or a diff. Outside a live session
 both functions reject. `node` must be on `PATH`.

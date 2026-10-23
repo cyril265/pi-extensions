@@ -2,12 +2,18 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
-import type { ExtensionAPI, ExtensionContext, Theme } from '@earendil-works/pi-coding-agent'
-import { truncateToWidth } from '@earendil-works/pi-tui'
+import {
+  type ExtensionAPI,
+  type ExtensionContext,
+  getAgentDir,
+  type Theme,
+} from '@earendil-works/pi-coding-agent'
+import { type Color, parseColor, truncateToWidth } from '@earendil-works/pi-tui'
 
 class FooterStatuses {
   sandboxActive = false
   others: string[] = []
+  tps: string[] = []
 }
 
 type QuotaUsageWindow = {
@@ -47,9 +53,15 @@ type FooterModelState = {
 
 type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
+type ModelColors = {
+  exact: Map<string, Color>
+  globs: Array<{ pattern: RegExp; color: Color }>
+}
+
 class FooterRuntimeState {
   requestRender?: () => void
   currentModel: FooterModelState = {}
+  modelColors: ModelColors = { exact: new Map(), globs: [] }
   currentDirectory = '?'
   contextPercent: number | null = null
   contextTokens: number | null = null
@@ -82,6 +94,7 @@ const GPT_5_6_CACHE_WRITE_SURCHARGE_PER_MILLION: Record<string, number> = {
 }
 const GPT_5_6_LONG_CONTEXT_THRESHOLD = 272_000
 const HIDDEN_STATUS_KEYS = new Set(['codebase-memory'])
+const CODEX_FAST_STATUS_KEY = 'fast-priority'
 const SUB_USAGE_STATUS_KEYS = new Set(['sub-bar', 'sub-status:usage'])
 const CODEX_USAGE_TIMEOUT_MS = 10_000
 const QUOTA_REFRESH_INTERVAL_MS = 180_000
@@ -94,6 +107,10 @@ const IDLE_MINUTES_TICK_MS = 60_000
 const DEFAULT_CODEX_USAGE_BASE_URL = 'https://chatgpt.com/backend-api'
 const ANTHROPIC_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 const OPENAI_AUTH_CLAIM = 'https://api.openai.com/auth'
+const CONFIG_FILE_NAME = 'pi-hud-footer.json'
+const HEX_COLOR = /^#(?:[\da-f]{3}|[\da-f]{6})$/i
+const TPS_STATUS_KEY = 'tps'
+const TPS_STATUS = /^eff \S+ t\/s(?: \| \S+ ttft)?$/
 
 function stripAnsi(text: string): string {
   return text.replace(/\u001b\[[0-9;]*m/g, '')
@@ -109,8 +126,14 @@ function sanitizeStatusText(text: string): string {
     .trim()
 }
 
+function formatTpsStatus(status: string): string[] | undefined {
+  if (!TPS_STATUS.test(status)) return undefined
+  return status.replace(/^eff /, '').replace(' t/s', ' tps').split(' | ')
+}
+
 function shouldHideStatusEntry(key: string, providerName: string | undefined): boolean {
   if (HIDDEN_STATUS_KEYS.has(key)) return true
+  if (key === CODEX_FAST_STATUS_KEY) return !(providerName && CODEX_PROVIDER.test(providerName))
   if (
     !(providerName && (CODEX_PROVIDER.test(providerName) || ANTHROPIC_PROVIDER.test(providerName)))
   ) {
@@ -137,6 +160,14 @@ function getFooterStatuses(
 
     if (key === 'preset' || key.toLowerCase().includes('mcp')) continue
     if (/^(preset|mcp)\s*:/i.test(status)) continue
+
+    if (key === TPS_STATUS_KEY) {
+      const segments = formatTpsStatus(status)
+      if (segments) {
+        result.tps = segments
+        continue
+      }
+    }
 
     result.others.push(status)
   }
@@ -300,6 +331,81 @@ function buildIdleTimerSegment(theme: Theme): string {
 function getRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
   return value as Record<string, unknown>
+}
+
+function globToRegExp(glob: string): RegExp {
+  const source = glob
+    .split('*')
+    .map(part => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+    .join('.*')
+  return new RegExp(`^${source}$`)
+}
+
+function loadModelColors(configPath: string): { modelColors: ModelColors; warnings: string[] } {
+  const modelColors: ModelColors = { exact: new Map(), globs: [] }
+  const warnings: string[] = []
+
+  let raw: unknown
+  try {
+    raw = JSON.parse(readFileSync(configPath, 'utf8'))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      warnings.push(error instanceof Error ? error.message : String(error))
+    }
+    return { modelColors, warnings }
+  }
+
+  const config = getRecord(raw)
+  if (!config) {
+    warnings.push('expected a JSON object')
+    return { modelColors, warnings }
+  }
+  if (config.modelColors === undefined) return { modelColors, warnings }
+
+  const entries = getRecord(config.modelColors)
+  if (!entries) {
+    warnings.push('"modelColors" must be an object')
+    return { modelColors, warnings }
+  }
+
+  for (const [pattern, value] of Object.entries(entries)) {
+    if (!pattern.trim()) {
+      warnings.push('"modelColors" keys must be model ids')
+      continue
+    }
+    if (typeof value !== 'string' || !HEX_COLOR.test(value)) {
+      warnings.push(`"${pattern}" must map to a hex color such as "#d75f5f"`)
+      continue
+    }
+
+    const color = parseColor(value)
+    if (pattern.includes('*')) {
+      modelColors.globs.push({ pattern: globToRegExp(pattern), color })
+    } else {
+      modelColors.exact.set(pattern, color)
+    }
+  }
+
+  return { modelColors, warnings }
+}
+
+function reloadModelColors(ctx: ExtensionContext): void {
+  const configPath = join(getAgentDir(), CONFIG_FILE_NAME)
+  const { modelColors, warnings } = loadModelColors(configPath)
+  runtimeState.modelColors = modelColors
+  if (warnings.length === 0) return
+
+  ctx.ui.notify(
+    `pi-hud-footer: ignored invalid model colors in ${configPath}\n${warnings.map(warning => `- ${warning}`).join('\n')}`,
+    'warning',
+  )
+}
+
+function getModelColor(modelId: string | undefined): Color | undefined {
+  if (!modelId) return undefined
+
+  const { exact, globs } = runtimeState.modelColors
+  return exact.get(modelId) ?? globs.find(glob => glob.pattern.test(modelId))?.color
 }
 
 function getQuotaCachePath(providerName: string): string {
@@ -1115,7 +1221,6 @@ function startQuotaRefreshTimer(ctx: ExtensionContext): void {
 }
 
 function buildFooterLine(theme: Theme, branch: string | null, statuses: FooterStatuses): string {
-  const provider = truncateToWidth(runtimeState.currentModel.provider ?? 'no provider', 18, '…')
   const model = truncateToWidth(
     runtimeState.currentModel.name ?? runtimeState.currentModel.id ?? 'no model',
     28,
@@ -1124,6 +1229,7 @@ function buildFooterLine(theme: Theme, branch: string | null, statuses: FooterSt
   const sessionTotalCostSegment = buildSessionTotalCostSegment(theme)
   const quotaSegment = buildCodexQuotaSegment(theme) || buildAnthropicQuotaSegment(theme)
   const idleTimerSegment = buildIdleTimerSegment(theme)
+  const modelColor = getModelColor(runtimeState.currentModel.id)
 
   const segments = [
     `${theme.fg('dim', '⌂ ')}${theme.fg('accent', theme.bold(runtimeState.currentDirectory))}`,
@@ -1134,12 +1240,12 @@ function buildFooterLine(theme: Theme, branch: string | null, statuses: FooterSt
       runtimeState.contextTokens,
       runtimeState.contextWindow,
     ),
-    theme.fg('dim', provider),
-    theme.bold(model),
+    modelColor ? theme.style(model, { fg: modelColor, bold: true }) : theme.bold(model),
     theme.fg(getThinkingColor(runtimeState.thinkingLevel), theme.bold(runtimeState.thinkingLevel)),
     quotaSegment,
     statuses.sandboxActive ? theme.fg('accent', '🔒') : '',
     ...statuses.others,
+    ...statuses.tps.map(segment => theme.fg('dim', segment)),
     sessionTotalCostSegment,
     idleTimerSegment,
   ]
@@ -1185,6 +1291,7 @@ export default function (pi: ExtensionAPI) {
     stopIdleTimer()
     syncRuntimeState(pi, ctx)
     if (!ctx.hasUI) return
+    reloadModelColors(ctx)
     buildFooter(pi, ctx)
     void refreshQuotaUsage(ctx, { allowStaleCache: true, skipFetch: true })
     startQuotaRefreshTimer(ctx)

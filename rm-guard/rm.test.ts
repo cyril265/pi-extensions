@@ -10,9 +10,9 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
-import { guardPrefix, serveAskDir } from './index.ts'
+import { allowList, binDir, serveAskDir } from './index.ts'
 
 let base: string
 let root: string
@@ -23,14 +23,19 @@ function has(...parts: string[]): boolean {
   return existsSync(join(base, ...parts))
 }
 
-function run(command: string, cwd = root, allowed = [root, scratch]) {
-  const env = { ...process.env, HOME: outside }
+function guardEnv(allowed: string[], askDir = ''): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  env.HOME = outside
+  env.PATH = `${binDir}${delimiter}${process.env.PATH}`
+  env.PI_SESSION_ID = 'rm-guard-test'
+  env.PI_RM_ALLOW = allowList(allowed)
+  env.PI_RM_ASK_DIR = askDir
   delete env.UNSET_DIR
-  const result = spawnSync('/bin/bash', ['-c', `${guardPrefix(allowed)}\n${command}`], {
-    cwd,
-    env,
-    encoding: 'utf8',
-  })
+  return env
+}
+
+function run(command: string, cwd = root, allowed = [root, scratch], env = guardEnv(allowed)) {
+  const result = spawnSync('/bin/bash', ['-c', command], { cwd, env, encoding: 'utf8' })
   return { status: result.status, stderr: result.stderr, stdout: result.stdout }
 }
 
@@ -43,9 +48,9 @@ function expectBlocked(command: string, cwd = root) {
 }
 
 function spawnGuarded(command: string, askDir = '') {
-  const child = spawn('/bin/bash', ['-c', `${guardPrefix([root, scratch], askDir)}\n${command}`], {
+  const child = spawn('/bin/bash', ['-c', command], {
     cwd: root,
-    env: { ...process.env, HOME: outside },
+    env: guardEnv([root, scratch], askDir),
   })
   let stderr = ''
   child.stderr.setEncoding('utf8').on('data', chunk => (stderr += chunk))
@@ -68,7 +73,7 @@ beforeEach(() => {
   root = join(base, 'root')
   outside = join(base, 'outside')
   scratch = join(base, 'scratch')
-  for (const dir of ['root/dir', 'root/sub', 'outside/target', 'scratch']) {
+  for (const dir of ['root/dir', 'root/sub', 'outside/target/deep', 'outside/other', 'scratch']) {
     mkdirSync(join(base, dir), { recursive: true })
   }
   for (const file of [
@@ -87,7 +92,7 @@ beforeEach(() => {
   symlinkSync(join(outside, 'target'), join(root, 'link-out'))
   symlinkSync(join(root, 'nowhere'), join(root, 'dangling'))
   writeFileSync(join(root, 'clean-in.sh'), 'rm -f file\n')
-  writeFileSync(join(root, 'clean-out.sh'), 'rm -f ../outside/file\n')
+  writeFileSync(join(root, 'clean-out.sh'), 'rm -rf ../outside/target\n')
 })
 
 afterEach(() => {
@@ -155,16 +160,42 @@ describe('allowed deletions inside the project', () => {
   })
 })
 
+describe('files outside the project', () => {
+  it('are deleted without asking, also through a symlinked directory', async () => {
+    let asked = 0
+    const result = await runAsking('rm -f ../outside/file link-out/child', async () => {
+      asked++
+      return false
+    })
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(asked, 0)
+    assert.equal(has('outside/file'), false)
+    assert.equal(has('outside/target/child'), false)
+    assert.equal(has('outside/target/deep'), true)
+  })
+})
+
+describe('processes outside agent bash commands', () => {
+  it('get plain rm without PI_SESSION_ID, even with the guard on PATH', () => {
+    const env = guardEnv([root, scratch])
+    delete env.PI_SESSION_ID
+    delete env.PI_RM_ALLOW
+    assert.equal(run('rm -rf ../outside/target', root, [], env).status, 0)
+    assert.equal(has('outside/target'), false)
+  })
+})
+
 describe('blocked deletions outside the project', () => {
-  it('refuses an explicit outside path', () => {
-    expectBlocked('rm -f ../outside/file')
-    assert.equal(has('outside/file'), true)
+  it('refuses an explicit outside directory', () => {
+    expectBlocked('rm -rf ../outside/target')
+    assert.equal(has('outside/target/child'), true)
   })
 
   it('refuses to follow a symlink out via trailing slash or glob', () => {
     expectBlocked('rm -rf link-out/')
     expectBlocked('rm -rf link-out/*')
     assert.equal(has('outside/target/child'), true)
+    assert.equal(has('outside/target/deep'), true)
   })
 
   it('refuses the project root itself', () => {
@@ -203,20 +234,21 @@ describe('blocked deletions outside the project', () => {
   })
 
   it('validates every operand before deleting any', () => {
-    expectBlocked('rm -f file ../outside/file')
+    expectBlocked('rm -rf file ../outside/file ../outside/target')
     assert.equal(has('root/file'), true)
     assert.equal(has('outside/file'), true)
+    assert.equal(has('outside/target'), true)
   })
 
   it('reaches rm inside a script the text of the command never shows', () => {
     expectBlocked('bash clean-out.sh')
-    assert.equal(has('outside/file'), true)
+    assert.equal(has('outside/target'), true)
   })
 
   it('reports operand, resolved path and allowed directories', () => {
-    const result = expectBlocked('rm -f ../outside/file')
-    assert.match(result.stderr, /operand: \.\.\/outside\/file/)
-    assert.match(result.stderr, new RegExp(`resolved path: ${outside}/file`))
+    const result = expectBlocked('rm -rf ../outside/target')
+    assert.match(result.stderr, /operand: \.\.\/outside\/target/)
+    assert.match(result.stderr, new RegExp(`resolved path: ${outside}/target`))
     assert.match(result.stderr, new RegExp(`allowed directory: ${root}`))
     assert.match(result.stderr, new RegExp(`allowed directory: ${scratch}`))
     assert.match(result.stderr, /ask the user to run it/)
@@ -224,54 +256,62 @@ describe('blocked deletions outside the project', () => {
 })
 
 describe('asking the user', () => {
-  it('deletes when the user allows and shows only the blocked paths', async () => {
+  it('deletes when the user allows and shows only the blocked directories', async () => {
     const asked: string[][] = []
-    const result = await runAsking('rm -f file ../outside/file ../outside/target/child', async paths => {
-      asked.push(paths)
-      return true
-    })
+    const result = await runAsking(
+      'rm -rf file ../outside/file ../outside/target ../outside/other',
+      async paths => {
+        asked.push(paths)
+        return true
+      },
+    )
     assert.equal(result.status, 0, result.stderr)
-    assert.deepEqual(asked, [[join(outside, 'file'), join(outside, 'target', 'child')]])
+    assert.deepEqual(asked, [[join(outside, 'target'), join(outside, 'other')]])
     assert.equal(has('root/file'), false)
     assert.equal(has('outside/file'), false)
-    assert.equal(has('outside/target/child'), false)
+    assert.equal(has('outside/target'), false)
+    assert.equal(has('outside/other'), false)
   })
 
   it('blocks when the user declines', async () => {
-    const result = await runAsking('rm -f file ../outside/file', async () => false)
+    const result = await runAsking('rm -rf file ../outside/target', async () => false)
     assert.equal(result.status, 3)
     assert.match(result.stderr, /The user declined this deletion/)
     assert.equal(has('root/file'), true)
-    assert.equal(has('outside/file'), true)
+    assert.equal(has('outside/target'), true)
   })
 
   it('does not ask for deletions inside the project', async () => {
     let asked = 0
-    const result = await runAsking('rm -f file', async () => {
+    const result = await runAsking('rm -rf file dir', async () => {
       asked++
       return false
     })
     assert.equal(result.status, 0, result.stderr)
     assert.equal(asked, 0)
     assert.equal(has('root/file'), false)
+    assert.equal(has('root/dir'), false)
   })
 
   it('asks once per rm call, also inside a script', async () => {
     let asked = 0
-    const result = await runAsking('bash clean-out.sh && rm -f ../outside/target/child', async () => {
-      asked++
-      return true
-    })
+    const result = await runAsking(
+      'bash clean-out.sh && rm -rf ../outside/other',
+      async () => {
+        asked++
+        return true
+      },
+    )
     assert.equal(result.status, 0, result.stderr)
     assert.equal(asked, 2)
-    assert.equal(has('outside/file'), false)
-    assert.equal(has('outside/target/child'), false)
+    assert.equal(has('outside/target'), false)
+    assert.equal(has('outside/other'), false)
   })
 
   it('passes paths with newlines intact', async () => {
-    writeFileSync(join(outside, 'line\nbreak'), 'x')
+    mkdirSync(join(outside, 'line\nbreak'))
     const asked: string[][] = []
-    await runAsking(`rm -f ../outside/$'line\\nbreak'`, async paths => {
+    await runAsking(`rm -rf ../outside/$'line\\nbreak'`, async paths => {
       asked.push(paths)
       return false
     })
@@ -282,7 +322,7 @@ describe('asking the user', () => {
     const askDir = mkdtempSync(join(base, 'ask-'))
     let answer!: (allowed: boolean) => void
     const stop = serveAskDir(askDir, () => new Promise(resolve => (answer = resolve)))
-    const pending = spawnGuarded('rm -f ../outside/file', askDir)
+    const pending = spawnGuarded('rm -rf ../outside/target', askDir)
     while (!answer) await new Promise(resolve => setTimeout(resolve, 20))
     stop()
     const result = await pending
@@ -290,26 +330,21 @@ describe('asking the user', () => {
     assert.match(result.stderr, /The user declined this deletion/)
     answer(true)
     await new Promise(resolve => setTimeout(resolve, 50))
-    assert.equal(has('outside/file'), true)
+    assert.equal(has('outside/target'), true)
   })
 
-  it('never asks in a headless session even when PI_RM_ASK_DIR is inherited', async () => {
+  it('never asks when PI_RM_ASK_DIR is empty, as in a headless session', async () => {
     const askDir = mkdtempSync(join(base, 'ask-'))
     let asked = 0
     const stop = serveAskDir(askDir, async () => {
       asked++
       return true
     })
-    const child = spawnSync('/bin/bash', ['-c', `${guardPrefix([root, scratch])}\nrm -f ../outside/file`], {
-      cwd: root,
-      env: { ...process.env, PI_RM_ASK_DIR: askDir },
-      encoding: 'utf8',
-      timeout: 5000,
-    })
+    const result = run('rm -rf ../outside/target')
     stop()
-    assert.equal(child.status, 3, child.stderr)
+    assert.equal(result.status, 3, result.stderr)
     assert.equal(asked, 0)
-    assert.equal(has('outside/file'), true)
+    assert.equal(has('outside/target'), true)
   })
 })
 
@@ -328,8 +363,17 @@ describe('guard configuration', () => {
     assert.equal(has('root/file'), true)
   })
 
+  it('fails closed in an agent command when PI_RM_ALLOW is not set', () => {
+    const env = guardEnv([root, scratch])
+    delete env.PI_RM_ALLOW
+    const result = run('rm -f file', root, [], env)
+    assert.equal(result.status, 64)
+    assert.match(result.stderr, /PI_RM_ALLOW is not set/)
+    assert.equal(has('root/file'), true)
+  })
+
   it('rejects a colon or newline in an allowed directory before anything runs', () => {
-    assert.throws(() => guardPrefix([root, 'a:b']), /contains ':' or newline/)
-    assert.throws(() => guardPrefix([root, 'a\nb']), /contains ':' or newline/)
+    assert.throws(() => allowList([root, 'a:b']), /contains ':' or newline/)
+    assert.throws(() => allowList([root, 'a\nb']), /contains ':' or newline/)
   })
 })

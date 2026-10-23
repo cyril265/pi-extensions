@@ -1,6 +1,7 @@
 import crossSpawn from 'cross-spawn'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 import { npm } from './exec.ts'
+import { getAgentDir } from './settings.ts'
 import { hasPackageJson } from './sources.ts'
 
 export type Recommendation = 'yes' | 'no' | 'maybe'
@@ -14,7 +15,8 @@ const piArgs = [
   'gpt-5.6-sol',
   '--thinking',
   'medium',
-  '--no-session',
+  '--session-dir',
+  join(getAgentDir(), 'audit-runs', 'sessions'),
   '--no-context-files',
   '--no-extensions',
   '--no-skills',

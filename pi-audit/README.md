@@ -11,7 +11,8 @@ Audits Pi packages before install/update, then installs approved local snapshots
   - Example: `pi-audit update`
 - `pi-audit update-all` — same as `pi-audit update` without a package.
 - Run reports go to `<agent-dir>/audit-runs/` (`~/.pi/agent/audit-runs/` unless `PI_CODING_AGENT_DIR` is set). `<timestamp>` is the ISO generation time with `:` and `.` replaced by `-`. Each report lists every audited or failed update with the current manifest, the candidate revision (`version` or `gitHead` plus `pinnedSource`), and the audit result or failure stage.
-- Install, update, and migrate decisions accept `[y]es`, `[n]o`, or `[a]sk`. Follow-up sessions are ephemeral and can only read, search, and list files.
+- Every audit and follow-up Pi session is saved to `<agent-dir>/audit-runs/sessions/` as a Pi session `.jsonl`, so token usage, tool calls, and timing can be read back with `pi --session <path>` or by parsing the file.
+- Install, update, and migrate decisions accept `[y]es`, `[n]o`, or `[a]sk`. Follow-up sessions can only read, search, and list files.
 - Snapshot manifests (`.pi-audit.json`) record the npm version or git commit and a `pinnedSource` so reviewed candidates can be reproduced later.
 - Packages with a `package.json` get their production dependencies installed (lifecycle scripts ignored) before the audit, so the model can follow imports into `node_modules`, and `npm audit` advisories are handed to the model as evidence. The generated `package-lock.json` is stored with the snapshot and the post-approval `npm ci` installs exactly the audited versions. If the audited package declares `scripts.postinstall`, `pi-audit` shows the command and asks whether to run it.
 - `pi-audit migrate` — convert existing npm/git Pi packages into audited local snapshots and remove the original install from `<agent-dir>/npm`, `<agent-dir>/git`, or the project `.pi/` equivalents.

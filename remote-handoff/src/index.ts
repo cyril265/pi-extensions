@@ -5,7 +5,7 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { atomicWrite } from "./atomic-write.js";
@@ -24,7 +24,6 @@ import {
   createBundle,
   createSnapshot,
   deleteRef,
-  diff,
   analyzeApplyPaths,
   assertRepositoryHasCommits,
   importResult,
@@ -34,17 +33,16 @@ import {
   resolveDirectoryRepository,
   resolveRepository,
   resolveTree,
+  snapshotTree,
   type RepositoryPaths,
 } from "./git.js";
 import { LocalFilesChangedError, runInteractiveMergeReview } from "./merge-review.js";
 import { isPathEqualOrInside, packageRoot } from "./paths.js";
-import { getExecutingPiVersion } from "./pi-version.js";
+import { executingPiVersion } from "./pi-version.js";
 import { buildProfile } from "./profile.js";
 import {
   isSshHostUnreachableError,
   isSshKeyLockedError,
-  localHerdrInstallation,
-  type TerminalAttachmentEnd,
 } from "./remote.js";
 import {
   assertRemoteWorkspaceAvailable,
@@ -57,7 +55,7 @@ import {
   observeRemoteWorkspace,
   prepareRemoteContinuation,
   provisionInitialRemoteWorkspace,
-  refreshStoppedRemoteWorkspace,
+  refreshRemoteHerdr,
   requestGracefulStop,
   resolveNewRemoteWorkspace,
   settleUnstartedReservation,
@@ -80,19 +78,16 @@ import {
   taskDirectory,
   tryWithRepositoryOperationLock,
   withRepositoryOperationLock,
-  type ActiveTaskState,
   type ApplyingTaskState,
   type ApplyPlan,
   type CleanupPendingTaskState,
-  type PreparedTaskState,
-  type RemoteOwnedTaskState,
+  type RemoteTaskState,
   type ReservedTaskState,
   type ReturnedAuthentication,
   type ReturningTaskState,
-  type StoppedTaskState,
   type TaskState,
 } from "./state.js";
-import { showReadOnlyText } from "./text-viewer.js";
+import { showDiff } from "./diff-viewer.js";
 
 const controlStatusKey = "remote-handoff-control";
 const gracefulStopTimeoutMs = 10_000;
@@ -104,7 +99,7 @@ declare global {
 const processInstanceToken = globalThis.__piRemoteHandoffProcessInstanceToken ??= randomUUID();
 
 interface AttachmentReservation {
-  task: ActiveTaskState;
+  task: RemoteTaskState;
   lease: FileLockLease;
   markerContents: string;
 }
@@ -171,7 +166,7 @@ async function currentProcessOwnsAttachment(task: TaskState): Promise<boolean> {
   }
 }
 
-async function reserveAttachment(task: ActiveTaskState): Promise<AttachmentReservation> {
+async function reserveAttachment(task: RemoteTaskState): Promise<AttachmentReservation> {
   let lease: FileLockLease;
   try {
     lease = await acquireFileLock(attachmentLeasePath(task.commonGitDir), false);
@@ -221,10 +216,15 @@ function conversationIsBlocked(task: TaskState): boolean {
 }
 
 function remoteOwnsConversation(task: TaskState): boolean {
-  return task.phase === "reserved"
-    || task.phase === "active"
-    || task.phase === "stopped"
-    || task.phase === "prepared";
+  return task.phase === "reserved" || task.phase === "remote";
+}
+
+function remoteContext(
+  task: TaskState,
+  status: RemoteWorkspaceStatus | undefined,
+): { task: RemoteTaskState; status: RemoteWorkspaceStatus } {
+  if (task.phase !== "remote" || !status) throw new Error(`Unexpected Remote Handoff phase: ${task.phase}.`);
+  return { task, status };
 }
 
 async function resolveRepositoryContext(cwd: string): Promise<RepositoryPaths> {
@@ -303,12 +303,8 @@ function controlStatusLabel(task: TaskState, status?: RemoteWorkspaceStatus): st
   switch (task.phase) {
     case "reserved":
       return `Remote Pi is starting on ${task.host}. Run /remote-handoff to check status.`;
-    case "active":
+    case "remote":
       return `Checking Remote Pi on ${task.host}...`;
-    case "stopped":
-      return `Remote Pi stopped on ${task.host} without a result. Run /remote-handoff to continue or discard.`;
-    case "prepared":
-      return `Remote result ready from ${task.host}. Run /remote-handoff to review.`;
     case "applying":
       return "Remote result apply needs recovery. Run /remote-handoff to continue.";
     case "returning":
@@ -326,17 +322,16 @@ function setControlStatus(
   ctx.ui.setStatus(controlStatusKey, controlStatusLabel(task, status));
 }
 
-function remoteOwnedWithPhase(
-  task: ReservedTaskState | RemoteOwnedTaskState,
-  phase: RemoteOwnedTaskState["phase"],
-): RemoteOwnedTaskState {
-  return { ...task, phase };
+function remoteTask(task: ReservedTaskState, launchId = task.launchId): RemoteTaskState {
+  const { reservationKind: _reservationKind, ...metadata } = task;
+  return { ...metadata, phase: "remote", launchId };
 }
 
 async function reconcileRemoteTask(
-  task: ReservedTaskState | RemoteOwnedTaskState,
-): Promise<ReachableTask> {
-  const observation = await observeRemoteWorkspace(task);
+  task: ReservedTaskState | RemoteTaskState,
+  knownObservation?: RemoteWorkspaceObservation,
+): Promise<{ task: ReservedTaskState | RemoteTaskState; observation: RemoteWorkspaceObservation }> {
+  const observation = knownObservation ?? await observeRemoteWorkspace(task);
   if (observation.reconciliation.kind === "conflicting") {
     if (
       task.phase === "reserved"
@@ -349,29 +344,15 @@ async function reconcileRemoteTask(
       `Remote workspace belongs to launch ${observation.reconciliation.recordedLaunchId}, not ${task.launchId}.`,
     );
   }
-  let next: TaskState = task;
-
-  switch (observation.status.kind) {
-    case "active":
-      next = remoteOwnedWithPhase(task, "active");
-      break;
-    case "prepared":
-      next = remoteOwnedWithPhase(task, "prepared");
-      break;
-    case "stopped":
-      if (
-        task.phase !== "reserved"
-        || observation.reconciliation.kind === "matching-stopped"
-      ) {
-        next = remoteOwnedWithPhase(task, "stopped");
-      }
-      break;
-    case "incomplete":
-      break;
+  const launched = observation.status.kind === "active"
+    || observation.status.kind === "prepared"
+    || (observation.status.kind === "stopped" && observation.reconciliation.kind === "matching-stopped");
+  if (task.phase === "reserved" && launched) {
+    const remote = remoteTask(task);
+    await saveTask(remote);
+    return { task: remote, observation };
   }
-
-  if (next.phase !== task.phase) await saveTask(next);
-  return { task: next, observation };
+  return { task, observation };
 }
 
 async function observeTask(task: TaskState): Promise<ObservedTask> {
@@ -415,18 +396,98 @@ async function withProgress<T>(
   }
 }
 
+async function allSettled<T extends readonly unknown[] | []>(
+  values: T,
+): Promise<{ -readonly [P in keyof T]: Awaited<T[P]> }> {
+  await Promise.allSettled(values);
+  return Promise.all(values);
+}
+
 async function removeLocalHandoff(task: TaskState): Promise<void> {
   await removeRepositoryData(task, [task.handoffRef, task.resultRef]);
   await removeTaskFiles(task);
 }
 
-async function removePrelaunchReservation(task: ReservedTaskState): Promise<boolean> {
-  if (!(await settleUnstartedReservation(task, true))) return false;
-  await removeLocalHandoff(task);
-  return true;
+type ReservationSettlement = "not-applicable" | "reconciled" | "released" | "preserved";
+
+const reservationNotices = {
+  released: "Remote Pi never launched. The local conversation reservation was released.",
+  preserved: "The new remote run never launched. The stopped handoff was preserved.",
+};
+
+async function settleReservation(
+  task: ReservedTaskState,
+  reconciliation: RemoteWorkspaceObservation["reconciliation"],
+): Promise<ReservationSettlement> {
+  if (task.reservationKind === "continue" && reconciliation.kind === "conflicting" && !reconciliation.processRunning) {
+    await settleUnstartedReservation(task, false);
+    const settled = await observeRemoteWorkspace(task);
+    if (settled.reconciliation.kind === "conflicting" && !settled.reconciliation.processRunning) {
+      await saveTask(remoteTask(task, settled.reconciliation.recordedLaunchId));
+      return "preserved";
+    }
+  } else if (reconciliation.kind === "not-launched" || reconciliation.kind === "matching-unacknowledged") {
+    if (task.reservationKind === "start" && await settleUnstartedReservation(task, true)) {
+      await removeLocalHandoff(task);
+      return "released";
+    }
+    if (task.reservationKind === "continue" && await settleUnstartedReservation(task, false)) {
+      await saveTask(remoteTask(task));
+      return "preserved";
+    }
+  } else {
+    return "not-applicable";
+  }
+  await reconcileRemoteTask(task);
+  return "reconciled";
 }
 
-function menuForTask(task: TaskState, attachmentInUse: boolean): { title: string; items: MenuItem[] } {
+function remoteMenu(host: string, status: RemoteWorkspaceStatus): { title: string; items: MenuItem[] } {
+  switch (status.kind) {
+    case "active":
+      return {
+        title: `Remote Pi is active on ${host}`,
+        items: [
+          { action: "attach", label: "attach: open the remote Pi terminal" },
+          { action: "status", label: "status: show remote run status" },
+          { action: "stop", label: "stop and prepare result" },
+        ],
+      };
+    case "stopped":
+      return {
+        title: `Remote Pi stopped on ${host} without a result`,
+        items: [
+          { action: "continue", label: "continue remotely" },
+          { action: "status", label: "status: show workspace status" },
+          { action: "discard", label: "discard: end this handoff" },
+        ],
+      };
+    case "prepared":
+      return {
+        title: `Result prepared on ${host}`,
+        items: [
+          { action: "view-diff", label: "view diff" },
+          { action: "continue", label: "continue remotely" },
+          { action: "apply", label: "apply" },
+          { action: "discard", label: "discard: end this handoff" },
+        ],
+      };
+    case "incomplete":
+      return {
+        title: `Remote workspace on ${host} needs attention`,
+        items: [
+          { action: "status", label: "status: show workspace status" },
+          { action: "discard", label: "discard: end this handoff" },
+        ],
+      };
+  }
+}
+
+function menuForTask(
+  task: TaskState,
+  status: RemoteWorkspaceStatus | undefined,
+  attachmentInUse: boolean,
+): { title: string; items: MenuItem[] } {
   const restrictWhileAttached = (
     menu: { title: string; items: MenuItem[] },
   ): { title: string; items: MenuItem[] } => {
@@ -445,34 +506,9 @@ function menuForTask(task: TaskState, attachmentInUse: boolean): { title: string
           { action: "status", label: "status: check startup" },
         ],
       });
-    case "active":
-      return restrictWhileAttached({
-        title: `Remote Pi is active on ${task.host}`,
-        items: [
-          { action: "attach", label: "attach: open the remote Pi terminal" },
-          { action: "status", label: "status: show remote run status" },
-          { action: "stop", label: "stop and prepare result" },
-        ],
-      });
-    case "stopped":
-      return restrictWhileAttached({
-        title: `Remote Pi stopped on ${task.host} without a result`,
-        items: [
-          { action: "continue", label: "continue remotely" },
-          { action: "status", label: "status: show workspace status" },
-          { action: "discard", label: "discard: end this handoff" },
-        ],
-      });
-    case "prepared":
-      return restrictWhileAttached({
-        title: `Result prepared on ${task.host}`,
-        items: [
-          { action: "view-diff", label: "view diff" },
-          { action: "continue", label: "continue remotely" },
-          { action: "apply", label: "apply" },
-          { action: "discard", label: "discard: end this handoff" },
-        ],
-      });
+    case "remote":
+      if (!status) throw new Error("A remote handoff has no observed status.");
+      return restrictWhileAttached(remoteMenu(task.host, status));
     case "cleanup-pending":
       return restrictWhileAttached({
         title: `Result applied, cleanup pending on ${task.host}`,
@@ -555,63 +591,24 @@ async function manageRemotes(ctx: ExtensionCommandContext): Promise<void> {
   ctx.ui.notify(`Removed SSH remote: ${target}`, "info");
 }
 
-async function attachRemoteTerminal(
-  ctx: ExtensionCommandContext,
-  task: ActiveTaskState,
-): Promise<TerminalAttachmentEnd> {
-  const outcome = await ctx.ui.custom<TerminalAttachmentEnd | Error>(
-    (tui, _theme, _keybindings, done) => {
-      let inputTaken = false;
-      const releaseInput = () => {
-        if (!inputTaken) return;
-        inputTaken = false;
-        tui.start();
-        tui.requestRender(true);
-      };
-
-      void (async () => {
-        let result: TerminalAttachmentEnd | Error;
-        try {
-          result = await attachRemoteRun(task, {
-            takeInput: () => {
-              tui.stop();
-              process.stdout.write("\u001b[2J\u001b[H");
-              inputTaken = true;
-            },
-            releaseInput,
-          });
-        } catch (error) {
-          result = asError(error);
-        } finally {
-          releaseInput();
-        }
-        done(result);
-      })();
-
-      return { render: () => [], invalidate: () => {} };
-    },
-  );
-
-  if (outcome instanceof Error) throw outcome;
-  return outcome;
-}
-
 async function attachWithControlConversation(
   ctx: ExtensionCommandContext,
   reservation: AttachmentReservation,
-  watch: (task: ActiveTaskState, ctx: ExtensionContext) => void,
+  watch: (task: RemoteTaskState, ctx: ExtensionContext) => void,
 ): Promise<void> {
   const { task } = reservation;
   const attach = async (controlContext: ExtensionCommandContext) => {
     let attachmentError: Error | undefined;
     try {
-      const terminalEnd = await attachRemoteTerminal(controlContext, task);
-      controlContext.ui.notify(
-        terminalEnd === "detached"
-          ? "Detached from remote Pi. Remote Pi keeps running."
-          : "Remote Pi exited. Checking for a prepared result...",
-        "info",
-      );
+      const code = await attachRemoteRun(controlContext, task);
+      const observation = await observeRemoteWorkspace(task);
+      if (observation.reconciliation.kind !== "matching-live") {
+        controlContext.ui.notify("Remote Pi exited. Checking for a prepared result...", "info");
+      } else if (code === 0) {
+        controlContext.ui.notify("Detached from remote Pi. Remote Pi keeps running.", "info");
+      } else {
+        throw new Error(`The remote terminal attachment ended with exit status ${code}.`);
+      }
     } catch (error) {
       attachmentError = asError(error);
     }
@@ -677,7 +674,7 @@ async function attachWithControlConversation(
 async function startHandoff(
   ctx: ExtensionCommandContext,
   repository: RepositoryPaths,
-): Promise<ActiveTaskState | undefined> {
+): Promise<RemoteTaskState | undefined> {
   ctx.ui.setStatus("remote-handoff", "Waiting for local Pi to become idle...");
   await ctx.waitForIdle();
   if (repository.repositoryKind === "git") {
@@ -693,17 +690,14 @@ async function startHandoff(
   }
   validateSshTarget(host);
 
-  ctx.ui.setStatus("remote-handoff", "Checking local Herdr...");
-  const herdr = await localHerdrInstallation();
   ctx.ui.setStatus("remote-handoff", `Checking remote host ${host}...`);
   const workspace = await resolveNewRemoteWorkspace({
     host,
     repoRoot: repository.repoRoot,
     commonGitDir: repository.commonGitDir,
-    herdr,
   });
   await addRemote(localAgentDir, host);
-  await assertRemoteWorkspaceAvailable(workspace);
+  assertRemoteWorkspaceAvailable(workspace);
 
   const id = randomUUID();
   const launchId = randomUUID();
@@ -731,33 +725,28 @@ async function startHandoff(
     }
     await rm(localDir, { recursive: true, force: true });
     await mkdir(localDir, { recursive: true, mode: 0o700 });
-    ctx.ui.setStatus("remote-handoff", "Exporting active conversation...");
-    const exported = await exportActiveBranch(
-      ctx.sessionManager,
-      portableSession,
-      workspace.conversationCwd,
-      join(localDir, "original-session.jsonl"),
-    );
-    ctx.ui.setStatus("remote-handoff", "Snapshotting local files...");
-    const handoffCommit = await createSnapshot(
-      repository,
-      localDir,
-      handoffRef,
-      "pi-remote-handoff handoff",
-    );
-    await rm(handoffBundle, { force: true });
-    await createBundle(repository, handoffBundle, handoffRef);
-    ctx.ui.setStatus("remote-handoff", "Building portable Pi profile...");
-    const profileArchive = await buildProfile({
-      agentDir: localAgentDir,
-      homeDir: homedir(),
-      localDir,
-      remoteProfileHome: workspace.profileHome,
-      excludedPackagePath: packageRoot,
-    });
-    const authenticationBaseline = await captureAuthenticationSnapshot(localAgentDir, localDir);
-    await createControlSession(controlSessionFile, repository.repoRoot);
-    const piVersion = await getExecutingPiVersion();
+    ctx.ui.setStatus("remote-handoff", "Snapshotting conversation, files, and Pi profile...");
+    const [exported, handoffCommit, profile] = await allSettled([
+      exportActiveBranch(
+        ctx.sessionManager,
+        portableSession,
+        workspace.conversationCwd,
+        join(localDir, "original-session.jsonl"),
+      ),
+      createSnapshot(repository, localDir, handoffRef, "pi-remote-handoff handoff").then(async (commit) => {
+        await createBundle(repository, handoffBundle, handoffRef);
+        return commit;
+      }),
+      buildProfile({
+        agentDir: localAgentDir,
+        homeDir: homedir(),
+        remoteProfileHome: workspace.profileHome,
+        excludedPackagePath: packageRoot,
+      }),
+      captureAuthenticationSnapshot(localAgentDir, localDir),
+      createControlSession(controlSessionFile, repository.repoRoot),
+    ]);
+    const piVersion = executingPiVersion();
     const repositoryMetadata = repository.repositoryKind === "directory"
       ? {
           repositoryKind: repository.repositoryKind,
@@ -772,7 +761,7 @@ async function startHandoff(
         };
 
     const reservedTask: ReservedTaskState = {
-      version: 7,
+      version: 8,
       ...repositoryMetadata,
       phase: "reserved",
       reservationKind: "start",
@@ -782,10 +771,8 @@ async function startHandoff(
       localDir,
       remoteDir: workspace.remoteDir,
       remoteAgentDir: workspace.remoteAgentDir,
-      remotePiCommand: workspace.remotePiCommand,
       herdrSession: `pi-handoff-${createHash("sha256").update(id).digest("hex").slice(0, 12)}`,
       remoteHerdrCommand: workspace.remoteHerdrCommand,
-      herdrVersion: herdr.version,
       handoffCommit,
       handoffRef,
       resultRef,
@@ -803,39 +790,30 @@ async function startHandoff(
 
     await withProgress(
       ctx,
-      "Creating private remote workspace...",
+      "Uploading handoff...",
       (onProgress) => provisionInitialRemoteWorkspace({
         task: reservedTask,
         artifacts: {
           handoffBundle,
           portableSession,
-          profileArchive,
-          authenticationBaseline,
         },
+        profile,
         piVersion,
         onProgress,
       }),
     );
 
     ctx.ui.setStatus("remote-handoff", "Launching remote Pi...");
-    await launchRemoteRun({
+    const launched = await launchRemoteRun({
       task: reservedTask,
       piVersion,
       trustMode: ctx.isProjectTrusted() ? "--approve" : "--no-approve",
     });
-    const reconciled = await reconcileRemoteTask(reservedTask);
-    const current = reconciled.task;
+    const reconciled = await reconcileRemoteTask(reservedTask, launched);
     ctx.ui.setStatus("remote-handoff", undefined);
-
-    if (current.phase === "active") {
-      return current;
-    }
-    if (reconciled.observation) {
-      ctx.ui.notify(
-        statusLabel(reconciled.observation.status),
-        reconciled.observation.status.kind === "prepared" ? "info" : "error",
-      );
-    }
+    const { status } = reconciled.observation;
+    if (reconciled.task.phase === "remote" && status.kind === "active") return reconciled.task;
+    ctx.ui.notify(statusLabel(status), status.kind === "prepared" ? "info" : "error");
   } catch (error) {
     if (!task) {
       await removeRepositoryData(repository, [handoffRef]);
@@ -848,12 +826,7 @@ async function startHandoff(
 
     try {
       const observation = await observeRemoteWorkspace(task);
-      if (
-        observation.reconciliation.kind === "not-launched"
-        || observation.reconciliation.kind === "matching-unacknowledged"
-      ) {
-        if (!(await removePrelaunchReservation(task))) await reconcileRemoteTask(task);
-      } else {
+      if (await settleReservation(task, observation.reconciliation) === "not-applicable") {
         await reconcileRemoteTask(task);
       }
     } catch (reconcileError) {
@@ -865,9 +838,10 @@ async function startHandoff(
 
 async function continueRemote(
   ctx: ExtensionCommandContext,
-  task: StoppedTaskState | PreparedTaskState,
-): Promise<ActiveTaskState | undefined> {
-  if (task.phase === "prepared") {
+  task: RemoteTaskState,
+  status: RemoteWorkspaceStatus,
+): Promise<RemoteTaskState | undefined> {
+  if (status.kind === "prepared") {
     const confirmed = await ctx.ui.confirm(
       "Continue remote work?",
       "This deletes the prepared result. You will need to stop the new remote run before you can review or apply it.",
@@ -876,84 +850,65 @@ async function continueRemote(
   }
 
   await ctx.waitForIdle();
-  let stopped: StoppedTaskState;
-  if (task.phase === "prepared") {
+  if (status.kind === "prepared") {
     ctx.ui.setStatus("remote-handoff", "Invalidating the prepared result...");
     await invalidatePreparedResult(task);
-    stopped = { ...task, phase: "stopped" };
-    await saveTask(stopped);
-  } else {
-    stopped = task;
   }
 
-  ctx.ui.setStatus("remote-handoff", "Checking local and remote runtimes...");
-  const herdr = await localHerdrInstallation();
-  const piVersion = await getExecutingPiVersion();
-  const currentStopped = await refreshStoppedRemoteWorkspace(stopped, herdr);
-  await saveTask(currentStopped);
+  ctx.ui.setStatus("remote-handoff", "Checking remote runtimes...");
+  const piVersion = executingPiVersion();
+  const current = await refreshRemoteHerdr(task);
+  await saveTask(current);
 
   await prepareRemoteContinuation({
-    task: currentStopped,
+    task: current,
     piVersion,
     onProgress: (message) => ctx.ui.setStatus("remote-handoff", message),
   });
 
   const reserved: ReservedTaskState = {
-    ...currentStopped,
+    ...current,
     phase: "reserved",
     reservationKind: "continue",
     launchId: randomUUID(),
   };
   await saveTask(reserved);
-  await launchRemoteRun({
+  const launched = await launchRemoteRun({
     task: reserved,
     piVersion,
     trustMode: ctx.isProjectTrusted() ? "--approve" : "--no-approve",
   });
-  const reconciled = await reconcileRemoteTask(reserved);
+  const reconciled = await reconcileRemoteTask(reserved, launched);
   ctx.ui.setStatus("remote-handoff", undefined);
-  if (reconciled.task.phase === "active") {
-    return reconciled.task;
-  }
-  if (reconciled.observation) {
-    ctx.ui.notify(statusLabel(reconciled.observation.status), "warning");
-  }
+  const reconciledStatus = reconciled.observation.status;
+  if (reconciled.task.phase === "remote" && reconciledStatus.kind === "active") return reconciled.task;
+  ctx.ui.notify(statusLabel(reconciledStatus), "warning");
 }
 
-async function stopAndPrepare(ctx: ExtensionCommandContext, task: ActiveTaskState): Promise<void> {
+async function stopAndPrepare(ctx: ExtensionCommandContext, task: RemoteTaskState): Promise<void> {
   ctx.ui.setStatus("remote-handoff", "Stopping remote Pi and preparing its result...");
   const observation = await requestGracefulStop(task, gracefulStopTimeoutMs);
+  ctx.ui.setStatus("remote-handoff", undefined);
   if (observation.status.kind === "prepared") {
-    const prepared = remoteOwnedWithPhase(task, "prepared");
-    await saveTask(prepared);
-    ctx.ui.setStatus("remote-handoff", undefined);
     ctx.ui.notify(`Result prepared.${errorDetail(observation.status.error)}`, "info");
     return;
   }
   if (observation.status.kind !== "active") {
-    const stopped = remoteOwnedWithPhase(task, "stopped");
-    await saveTask(stopped);
-    ctx.ui.setStatus("remote-handoff", undefined);
     ctx.ui.notify(statusLabel(observation.status), "warning");
     return;
   }
 
-  ctx.ui.setStatus("remote-handoff", undefined);
   const force = await ctx.ui.confirm(
     "Remote Pi did not stop",
     "Force stop the dedicated remote Herdr session? This can leave no prepared result.",
   );
   if (!force) return;
   const forced = await forceStopRemoteRun(task);
-  const phase = forced.status.kind === "prepared" ? "prepared" : "stopped";
-  await saveTask(remoteOwnedWithPhase(task, phase));
-  ctx.ui.notify(
-    phase === "prepared" ? "Result prepared." : "Remote Pi was force stopped without a prepared result.",
-    phase === "prepared" ? "info" : "warning",
-  );
+  if (forced.status.kind === "prepared") ctx.ui.notify("Result prepared.", "info");
+  else ctx.ui.notify("Remote Pi was force stopped without a prepared result.", "warning");
 }
 
-async function importPreparedResult(task: PreparedTaskState): Promise<{
+async function importPreparedResult(task: RemoteTaskState): Promise<{
   resultCommit: string;
   remoteSession: string;
 }> {
@@ -962,21 +917,8 @@ async function importPreparedResult(task: PreparedTaskState): Promise<{
   return { resultCommit, remoteSession: downloaded.session };
 }
 
-async function currentTree(task: TaskState, includedPaths: readonly string[] = []): Promise<string> {
-  const ref = `refs/pi-remote-handoff/${task.id}/current-${randomUUID()}`;
-  try {
-    const commit = await createSnapshot(
-      task,
-      task.localDir,
-      ref,
-      "pi-remote-handoff current files",
-      task.handoffCommit,
-      includedPaths,
-    );
-    return resolveTree(task, commit);
-  } finally {
-    await deleteRef(task, ref);
-  }
+function currentTree(task: TaskState, includedPaths: readonly string[] = []): Promise<string> {
+  return snapshotTree(task, task.localDir, task.handoffCommit, includedPaths);
 }
 
 async function writePatch(task: TaskState, patch: string): Promise<{ path: string; sha256: string }> {
@@ -992,27 +934,16 @@ async function removeApplyCandidate(plan: ApplyPlan): Promise<void> {
   ]);
 }
 
-async function prepareLocalReturnedSession(
-  task: PreparedTaskState,
+function prepareLocalReturnedSession(
+  task: RemoteTaskState,
   source: string,
 ): Promise<{ path: string; sha256: string }> {
-  const returned = await prepareReturnedSession(
+  return prepareReturnedSession(
     source,
-    task.originalSessionFile,
+    join(task.localDir, `returned-session-${randomUUID()}.jsonl`),
     task.originalSessionCwd,
     task.originalSessionId,
   );
-  const path = join(task.localDir, `returned-session-${randomUUID()}.jsonl`);
-  try {
-    await copyFile(returned.path, path);
-    await chmod(path, 0o600);
-    return { path, sha256: await hashFileSha256(path) };
-  } catch (error) {
-    await rm(path, { force: true });
-    throw error;
-  } finally {
-    await rm(returned.path, { force: true });
-  }
 }
 
 async function existingFileSha256(path: string): Promise<string | undefined> {
@@ -1024,12 +955,17 @@ async function existingFileSha256(path: string): Promise<string | undefined> {
   }
 }
 
+interface BuiltApplyPlan {
+  plan: ApplyPlan;
+  refs: string[];
+}
+
 async function buildApplyPlan(
   ctx: ExtensionCommandContext,
-  task: PreparedTaskState,
+  task: RemoteTaskState,
   resultCommit: string,
   remoteSession: string,
-): Promise<ApplyPlan | undefined> {
+): Promise<BuiltApplyPlan | undefined> {
   const paths = await analyzeApplyPaths(task, task.handoffCommit, resultCommit);
   const beforeTree = await currentTree(task, paths.includedPaths);
   const handoffTree = await resolveTree(task, task.handoffCommit);
@@ -1041,14 +977,17 @@ async function buildApplyPlan(
     try {
       const returned = await prepareLocalReturnedSession(task, remoteSession);
       return {
-        resultCommit,
-        beforeTree,
-        afterTree: await resolveTree(task, resultCommit),
-        includedPaths: paths.includedPaths,
-        patchFile: patchFile.path,
-        patchSha256: patchFile.sha256,
-        returnedSessionFile: returned.path,
-        returnedSessionSha256: returned.sha256,
+        plan: {
+          resultCommit,
+          beforeTree,
+          afterTree: await resolveTree(task, resultCommit),
+          includedPaths: paths.includedPaths,
+          patchFile: patchFile.path,
+          patchSha256: patchFile.sha256,
+          returnedSessionFile: returned.path,
+          returnedSessionSha256: returned.sha256,
+        },
+        refs: [],
       };
     } catch (error) {
       await rm(patchFile.path, { force: true });
@@ -1070,12 +1009,16 @@ async function buildApplyPlan(
   try {
     const returned = await prepareLocalReturnedSession(task, review.reviewSession.path);
     return {
-      ...review.applyPlan,
-      returnedSessionFile: returned.path,
-      returnedSessionSha256: returned.sha256,
+      plan: {
+        ...review.applyPlan,
+        returnedSessionFile: returned.path,
+        returnedSessionSha256: returned.sha256,
+      },
+      refs: review.refs,
     };
   } catch (error) {
     await rm(review.applyPlan.patchFile, { force: true });
+    for (const ref of review.refs) await deleteRef(task, ref);
     throw error;
   } finally {
     await rm(review.reviewSession.path, { force: true });
@@ -1169,7 +1112,7 @@ async function finishApplying(
 
 async function returnAuthentication(
   ctx: ExtensionCommandContext,
-  task: StoppedTaskState | PreparedTaskState,
+  task: RemoteTaskState,
 ): Promise<ReturnedAuthentication> {
   await returnRemoteAuthentication({
     task,
@@ -1188,7 +1131,7 @@ async function returnAuthentication(
 
 async function applyPreparedResult(
   ctx: ExtensionCommandContext,
-  task: PreparedTaskState,
+  task: RemoteTaskState,
 ): Promise<void> {
   await ctx.waitForIdle();
   ctx.ui.setStatus("remote-handoff", "Downloading prepared result...");
@@ -1196,9 +1139,9 @@ async function applyPreparedResult(
 
   while (true) {
     ctx.ui.setStatus("remote-handoff", "Preparing apply review...");
-    let plan: ApplyPlan | undefined;
+    let built: BuiltApplyPlan | undefined;
     try {
-      plan = await buildApplyPlan(ctx, task, imported.resultCommit, imported.remoteSession);
+      built = await buildApplyPlan(ctx, task, imported.resultCommit, imported.remoteSession);
     } catch (error) {
       if (error instanceof LocalFilesChangedError) {
         ctx.ui.notify("Local files changed during merge review. Restarting against the latest files.", "warning");
@@ -1207,14 +1150,19 @@ async function applyPreparedResult(
       throw error;
     }
     ctx.ui.setStatus("remote-handoff", undefined);
-    if (!plan) return;
+    if (!built) return;
+    const { plan } = built;
 
-    const patch = await readFile(plan.patchFile, "utf8");
-    await showReadOnlyText(ctx, "Changes apply will make", patch.trim() || "No file changes.");
-    const confirmed = await ctx.ui.confirm(
-      "Apply prepared result?",
-      "Return the reviewed conversation and apply these file changes without staging them?",
-    );
+    let confirmed: boolean;
+    try {
+      await showDiff(ctx, task, plan.beforeTree, plan.afterTree, "Changes apply will make", "No file changes.");
+      confirmed = await ctx.ui.confirm(
+        "Apply prepared result?",
+        "Return the reviewed conversation and apply these file changes without staging them?",
+      );
+    } finally {
+      for (const ref of built.refs) await deleteRef(task, ref);
+    }
     if (!confirmed) {
       await removeApplyCandidate(plan);
       return;
@@ -1293,11 +1241,12 @@ async function materializeOriginalConversation(task: TaskState): Promise<void> {
 
 async function discardHandoff(
   ctx: ExtensionCommandContext,
-  task: StoppedTaskState | PreparedTaskState,
+  task: RemoteTaskState,
+  status: RemoteWorkspaceStatus,
 ): Promise<void> {
   const confirmed = await ctx.ui.confirm(
     "Discard this handoff?",
-    task.phase === "prepared"
+    status.kind === "prepared"
       ? "Delete the prepared files and remote conversation without applying them?"
       : "Delete the remote workspace and return the unchanged original conversation?",
   );
@@ -1387,7 +1336,7 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
     if (timer) clearInterval(timer);
     watchers.delete(commonGitDir);
   };
-  const watch = (task: ActiveTaskState, ctx: ExtensionContext) => {
+  const watch = (task: RemoteTaskState, ctx: ExtensionContext) => {
     stopWatcher(task.commonGitDir);
     setControlStatus(ctx, task);
     let polling = false;
@@ -1400,28 +1349,23 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
           if (sessionClosed) return;
           const current = await loadTask(task.commonGitDir);
           if (sessionClosed) return;
-          if (!current || current.phase !== "active") {
+          if (!current || current.phase !== "remote") {
             if (current) setControlStatus(ctx, current);
             stopWatcher(task.commonGitDir);
             return;
           }
-          const reconciled = await reconcileRemoteTask(current);
+          const { status } = (await reconcileRemoteTask(current)).observation;
           if (sessionClosed) return;
           const connectionWasUnreachable = unreachable;
           unreachable = false;
-          if (reconciled.observation) {
-            setControlStatus(ctx, reconciled.task, reconciled.observation.status);
-          } else {
-            setControlStatus(ctx, reconciled.task);
-          }
-          if (reconciled.task.phase === "prepared") {
+          setControlStatus(ctx, current, status);
+          if (status.kind === "prepared") {
             stopWatcher(task.commonGitDir);
-            const status = reconciled.observation?.status;
             ctx.ui.notify(
-              `Remote result prepared.${status?.kind === "prepared" ? errorDetail(status.error) : ""} Open /remote-handoff to review it.`,
-              status?.kind === "prepared" && status.error ? "warning" : "info",
+              `Remote result prepared.${errorDetail(status.error)} Open /remote-handoff to review it.`,
+              status.error ? "warning" : "info",
             );
-          } else if (reconciled.task.phase === "stopped") {
+          } else if (status.kind === "stopped") {
             stopWatcher(task.commonGitDir);
             ctx.ui.notify("Remote Pi stopped without a prepared result. Open /remote-handoff to continue or discard.", "error");
           } else if (connectionWasUnreachable) {
@@ -1457,7 +1401,7 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
     void poll();
   };
 
-  const watchAfterAttachment = (task: ActiveTaskState, ctx: ExtensionContext) => {
+  const watchAfterAttachment = (task: RemoteTaskState, ctx: ExtensionContext) => {
     stopWatcher(task.commonGitDir);
     const wait = async () => {
       if (sessionClosed) return;
@@ -1495,7 +1439,7 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
       }
       if (location === "control") {
         setControlStatus(ctx, task);
-        if (task.phase === "active") {
+        if (task.phase === "remote") {
           if (await currentProcessOwnsAttachment(task)) {
             watchAfterAttachment(task, ctx);
           } else {
@@ -1684,105 +1628,61 @@ export default function registerRemoteHandoff(pi: ExtensionAPI) {
         }
         task = observed.value.task;
 
-        if (task.phase === "reserved") {
-          const reconciliation = observed.value.observation?.reconciliation;
-          if (
-            task.reservationKind === "continue"
-            && reconciliation?.kind === "conflicting"
-            && !reconciliation.processRunning
-          ) {
-            await settleUnstartedReservation(task, false);
-            const settled = await observeRemoteWorkspace(task);
-            if (
-              settled.reconciliation.kind === "conflicting"
-              && !settled.reconciliation.processRunning
-            ) {
-              const stopped: StoppedTaskState = {
-                ...task,
-                phase: "stopped",
-                launchId: settled.reconciliation.recordedLaunchId,
-              };
-              await saveTask(stopped);
+        if (task.phase === "reserved" && observed.value.observation) {
+          const settlement = await settleReservation(task, observed.value.observation.reconciliation);
+          if (settlement !== "not-applicable") {
+            if (settlement !== "reconciled") {
               ctx.ui.setStatus("remote-handoff", undefined);
-              ctx.ui.notify("The new remote run never launched. The stopped handoff was preserved.", "warning");
-            } else {
-              await reconcileRemoteTask(task);
-            }
-            continue;
-          }
-          if (reconciliation?.kind === "not-launched" || reconciliation?.kind === "matching-unacknowledged") {
-            if (task.reservationKind === "start") {
-              if (await removePrelaunchReservation(task)) {
-                ctx.ui.setStatus("remote-handoff", undefined);
-                ctx.ui.notify("Remote Pi never launched. The local conversation reservation was released.", "warning");
-              } else {
-                await reconcileRemoteTask(task);
-              }
-            } else {
-              if (await settleUnstartedReservation(task, false)) {
-                const stopped: StoppedTaskState = { ...task, phase: "stopped" };
-                await saveTask(stopped);
-                ctx.ui.setStatus("remote-handoff", undefined);
-                ctx.ui.notify("The new remote run never launched. The stopped handoff was preserved.", "warning");
-              } else {
-                await reconcileRemoteTask(task);
-              }
+              ctx.ui.notify(reservationNotices[settlement], "warning");
             }
             continue;
           }
         }
 
-        const menu = menuForTask(task, attachmentInUse);
+        const status = observed.value.observation?.status;
+        const menu = menuForTask(task, status, attachmentInUse);
         ctx.ui.setStatus("remote-handoff", undefined);
         const action = await selectMenu(ctx, menu.title, menu.items);
         if (!action) return;
 
         switch (action) {
           case "attach":
-            if (task.phase !== "active") throw new Error("Remote Pi is not active.");
-            attachment = await reserveAttachment(task);
+            attachment = await reserveAttachment(remoteContext(task, status).task);
             return;
           case "status":
             if (task.phase === "cleanup-pending") {
               ctx.ui.notify("The result is applied locally. Remote cleanup is still pending.", "warning");
-            } else if (observed.value.observation) {
-              ctx.ui.notify(statusLabel(observed.value.observation.status), "info");
+            } else if (status) {
+              ctx.ui.notify(statusLabel(status), "info");
             } else {
               ctx.ui.notify(`Remote Handoff phase: ${task.phase}.`, "info");
             }
             continue;
           case "stop":
-            if (task.phase !== "active") throw new Error("Remote Pi is not active.");
-            await stopAndPrepare(ctx, task);
+            await stopAndPrepare(ctx, remoteContext(task, status).task);
             continue;
-          case "continue":
-            if (task.phase !== "stopped" && task.phase !== "prepared") {
-              throw new Error("This handoff cannot continue remotely in its current phase.");
-            }
-            {
-              const active = await continueRemote(ctx, task);
-              if (active) attachment = await reserveAttachment(active);
-            }
+          case "continue": {
+            const remote = remoteContext(task, status);
+            const active = await continueRemote(ctx, remote.task, remote.status);
+            if (active) attachment = await reserveAttachment(active);
             return;
+          }
           case "view-diff": {
-            if (task.phase !== "prepared") throw new Error("No prepared result is available.");
+            const remote = remoteContext(task, status).task;
             ctx.ui.setStatus("remote-handoff", "Downloading prepared result...");
-            const imported = await importPreparedResult(task);
-            const output = (await diff(task, task.handoffCommit, imported.resultCommit)).trim();
+            const imported = await importPreparedResult(remote);
             ctx.ui.setStatus("remote-handoff", undefined);
-            await showReadOnlyText(ctx, "Remote changes", output || "No changes.");
+            await showDiff(ctx, remote, remote.handoffCommit, imported.resultCommit, "Remote changes", "No changes.");
             continue;
           }
           case "apply":
-            if (task.phase !== "prepared") throw new Error("No prepared result is available.");
-            await applyPreparedResult(ctx, task);
+            await applyPreparedResult(ctx, remoteContext(task, status).task);
             return;
-          case "discard":
-            if (task.phase !== "stopped" && task.phase !== "prepared") {
-              throw new Error("This handoff cannot be discarded in its current phase.");
-            }
-            await discardHandoff(ctx, task);
+          case "discard": {
+            const remote = remoteContext(task, status);
+            await discardHandoff(ctx, remote.task, remote.status);
             return;
+          }
           case "retry-cleanup":
             if (task.phase !== "cleanup-pending") throw new Error("Cleanup is not pending.");
             await retryCleanup(ctx, task);

@@ -258,12 +258,14 @@ describe('update', () => {
     assert.equal(readJson(manifestPath).version, latest)
 
     const runsDir = join(agentDir, 'audit-runs')
-    const [reportName] = readdirSync(runsDir)
+    const [reportName] = readdirSync(runsDir).filter(name => name.endsWith('.json'))
     const report = readJson(join(runsDir, reportName))
     assert.equal(report.updates.length, 1)
     assert.equal(report.updates[0].status, 'audited')
     assert.equal(report.updates[0].current.version, '0.0.1')
     assert.equal(report.updates[0].candidate.version, latest)
+    const sessions = readdirSync(join(runsDir, 'sessions'))
+    assert.ok(sessions.some(name => name.endsWith('.jsonl')), sessions.join(', '))
   })
 })
 

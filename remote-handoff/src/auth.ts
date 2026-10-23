@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { atomicWrite } from "./atomic-write.js";
 import { withFileLock } from "./file-lock.js";
 import { isRecord } from "./json.js";
@@ -65,39 +66,8 @@ function parseAuthentication(contents: string, source: string): Authentication {
   return authentication;
 }
 
-function encodeJson(value: string | number | boolean | null): string {
-  const encoded = JSON.stringify(value);
-  if (encoded === undefined) throw new Error("Authentication contains a value that JSON cannot encode.");
-  return encoded;
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return encodeJson(value);
-  }
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (typeof value === "object") {
-    const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
-    return `{${entries.map(([key, child]) => `${encodeJson(key)}:${canonicalJson(child)}`).join(",")}}`;
-  }
-  throw new Error("Authentication contains a value that JSON cannot encode.");
-}
-
 function providerValue(authentication: Authentication, provider: string): ProviderValue {
   return authentication.get(provider) ?? absent;
-}
-
-function equalProviderValues(left: ProviderValue, right: ProviderValue): boolean {
-  if (left === absent || right === absent) return left === right;
-  return canonicalJson(left) === canonicalJson(right);
-}
-
-function equalAuthentication(left: Authentication, right: Authentication): boolean {
-  const providers = new Set([...left.keys(), ...right.keys()]);
-  for (const provider of providers) {
-    if (!equalProviderValues(providerValue(left, provider), providerValue(right, provider))) return false;
-  }
-  return true;
 }
 
 function mergeAuthentication(
@@ -116,11 +86,11 @@ function mergeAuthentication(
     const remoteValue = providerValue(remote, provider);
     let merged: ProviderValue;
 
-    if (equalProviderValues(localValue, remoteValue)) {
+    if (isDeepStrictEqual(localValue, remoteValue)) {
       merged = localValue;
-    } else if (equalProviderValues(localValue, baseValue)) {
+    } else if (isDeepStrictEqual(localValue, baseValue)) {
       merged = remoteValue;
-    } else if (equalProviderValues(remoteValue, baseValue)) {
+    } else if (isDeepStrictEqual(remoteValue, baseValue)) {
       merged = localValue;
     } else {
       const choice = choices.get(provider);
@@ -141,7 +111,7 @@ function serializeAuthentication(authentication: Authentication): string {
   return `${JSON.stringify(Object.fromEntries(authentication), null, 2)}\n`;
 }
 
-export async function captureAuthenticationSnapshot(agentDir: string, localDir: string): Promise<string> {
+export async function captureAuthenticationSnapshot(agentDir: string, localDir: string): Promise<void> {
   const authPath = join(resolve(agentDir), "auth.json");
   const baselinePath = join(localDir, "auth-base.json");
   await mkdir(localDir, { recursive: true });
@@ -151,7 +121,6 @@ export async function captureAuthenticationSnapshot(agentDir: string, localDir: 
     checkLock();
     await atomicWrite(baselinePath, contents);
   });
-  return baselinePath;
 }
 
 async function downloadRemoteAuthentication(task: PendingAuthenticationTaskState): Promise<Authentication> {
@@ -222,7 +191,7 @@ export async function returnRemoteAuthentication(options: ReturnAuthenticationOp
 
     const saved = await withFileLock(localAuthPath, true, async (checkLock) => {
       const local = parseAuthentication(await readFile(localAuthPath, "utf8"), "Local Pi authentication");
-      if (!equalAuthentication(local, pending.local)) return false;
+      if (!isDeepStrictEqual(local, pending.local)) return false;
       const merged = mergeAuthentication(baseline, local, remote, choices);
       if (merged.conflicts.length > 0) {
         throw new Error(`Authentication conflicts remain for providers: ${merged.conflicts.join(", ")}.`);

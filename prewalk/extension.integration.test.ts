@@ -9,7 +9,6 @@ import {
   type AgentSession,
   createAgentSession,
   DefaultResourceLoader,
-  type ExtensionContext,
   ModelRuntime,
   type SessionEntry,
   SessionManager,
@@ -23,7 +22,6 @@ import prewalk from './index.ts'
 const executorModel = 'offline-test/executor'
 let directory: string
 let session: AgentSession
-let context: ExtensionContext
 let server: Server
 const originalEnvironment = { ...process.env }
 
@@ -78,14 +76,7 @@ before(async () => {
     cwd: directory,
     agentDir,
     settingsManager,
-    extensionFactories: [
-      prewalk,
-      pi => {
-        pi.on('session_start', (_event, ctx) => {
-          context = ctx
-        })
-      },
-    ],
+    extensionFactories: [prewalk],
   })
   await resourceLoader.reload()
   assert.deepEqual(resourceLoader.getExtensions().errors, [])
@@ -107,6 +98,11 @@ after(async () => {
   process.env = originalEnvironment
   if (directory) await rm(directory, { recursive: true, force: true })
 })
+
+function toolContext(toolCallId: string) {
+  assert.ok(session.extensionRunner)
+  return session.extensionRunner.createToolContext(toolCallId, undefined)
+}
 
 function customMessages(customType: string): Array<SessionEntry & { type: 'custom_message' }> {
   return session.sessionManager
@@ -175,10 +171,10 @@ test('dispatch forks the executor and the failure report arrives once', { timeou
   const dispatch = session.getToolDefinition('dispatch_executor')
   assert.ok(dispatch)
   const toolCallId = 'dispatch-call'
-  const result = await dispatch.execute(toolCallId, {}, undefined, undefined, context)
+  const result = await dispatch.execute(toolCallId, {}, undefined, undefined, toolContext(toolCallId))
   assert.match(text(result.content), new RegExp(executorModel))
   await assert.rejects(
-    () => dispatch.execute('dispatch-call-2', {}, undefined, undefined, context),
+    () => dispatch.execute('dispatch-call-2', {}, undefined, undefined, toolContext('dispatch-call-2')),
     /already in flight/,
   )
 
@@ -220,7 +216,7 @@ test('dispatch forks the executor and the failure report arrives once', { timeou
   await waitForIdle()
   assert.equal(customMessages('prewalk-executor-result').length, 1)
   await assert.doesNotReject(() =>
-    dispatch.execute('dispatch-call-3', {}, undefined, undefined, context),
+    dispatch.execute('dispatch-call-3', {}, undefined, undefined, toolContext('dispatch-call-3')),
   )
 })
 
